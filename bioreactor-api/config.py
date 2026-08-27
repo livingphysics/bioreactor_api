@@ -136,9 +136,11 @@ class Config:
         },
     }
 
-    # CO2 Sensor (Atlas Scientific EZO-CO2, reads ppm)
-    CO2_SENSOR_TYPE: str = 'atlas_i2c'
-    CO2_SENSOR_I2C_ADDRESS: Optional[int] = 0x69   # verified on the bus
+    # CO2 Sensor (Senseair K33, reads ppm). Speaks its own 4-byte ReadRAM frames,
+    # not the Atlas EZO protocol — it does NOT answer a plain I2C receive-byte, so
+    # it won't show up in a default `i2cdetect -y -r 1` scan even when healthy.
+    CO2_SENSOR_TYPE: str = 'sensair_k33'
+    CO2_SENSOR_I2C_ADDRESS: Optional[int] = 0x68   # verified on the bus 2026-08-27
     CO2_SENSOR_I2C_BUS: int = 1
 
     # O2 Sensor (Atlas Scientific EZO-O2, reads %)
@@ -167,14 +169,16 @@ class Config:
     # Pumps (ticUSB protocol)
     PUMPS: dict[str, dict[str, Union[str, int, float]]] = {
         'inflow': {
-            'serial': '00473510',
+            # Swapped in 2026-08-27; steps_per_ml below was calibrated for the
+            # previous pair (00473510/00473504) — recalibrate for these units.
+            'serial': '00473508',
             'step_mode': 2,
             'current_limit': 32,
             'direction': 'forward',
             'steps_per_ml': 41493129.7,
         },
         'outflow': {
-            'serial': '00473504',
+            'serial': '00473498',
             'step_mode': 2,
             'current_limit': 32,
             'direction': 'forward',
