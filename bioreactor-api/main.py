@@ -165,16 +165,6 @@ class EyespyState(BaseModel):
     voltages: list
     unit: str = "volts"
 
-class CO2State(BaseModel):
-    status: str
-    co2_ppm: float
-    unit: str = "ppm"
-
-class O2State(BaseModel):
-    status: str
-    o2_percent: float
-    unit: str = "percent"
-
 class AmbientTempState(BaseModel):
     status: str
     temperature: Optional[float]
@@ -267,9 +257,18 @@ async def lifespan(app: FastAPI):
             )
             runner.prune()  # trim old run files on startup
         except Exception as e:
+            # Deliberately fatal. HARDWARE_MODE=real must never silently degrade to
+            # simulated readings: a run driven by fake sensor data is worse than no
+            # run at all, and the failure would otherwise be invisible to anyone
+            # reading /api/state. Individual components are still allowed to fail --
+            # Bioreactor records those in _initialized and their endpoints return 503
+            # -- so this only fires when the rig as a whole cannot come up.
             logger.error(f"Hardware init failed: {e}", exc_info=True)
-            bioreactor = None
-            simulation_mode = True
+            raise RuntimeError(
+                "HARDWARE_MODE=real but hardware initialization failed; refusing to "
+                "start in simulation mode. Fix the hardware/config, or set "
+                "HARDWARE_MODE=simulation explicitly if you want mock data."
+            ) from e
     else:
         logger.info("Simulation mode — no hardware")
         # In simulation, pretend all non-infrastructure components are initialized
@@ -355,8 +354,8 @@ async def lifespan(app: FastAPI):
         )
         od_sampler.start()
 
-    # Atlas CO2 + O2 gas sampler: slow I2C reads (~1.5s each), polled in the background
-    # and cached for /api/state + history so the poll path stays fast.
+    # CO2 + O2 gas sampler: polled in the background and cached for /api/state +
+    # history so the poll path stays fast (an Atlas read alone takes ~1.5s).
     gas_sensors = []
     _gas_delay = int(getattr(config, 'GAS_READ_DELAY_MS', 1500))
     for _name, _comp, _cfg_attr, _cast in (
@@ -365,12 +364,22 @@ async def lifespan(app: FastAPI):
     ):
         if not initialized_components.get(_comp):
             continue
-        _dev = None
+        _entry = {'name': _name, 'kind': 'atlas', 'device': None,
+                  'delay': _gas_delay, 'cast': _cast}
         if not simulation_mode and bioreactor is not None:
-            _dev = (getattr(bioreactor, _cfg_attr, {}) or {}).get('atlas_device')
-            if _dev is None:
+            _scfg = getattr(bioreactor, _cfg_attr, {}) or {}
+            _dev = _scfg.get('atlas_device')
+            if _dev is not None:
+                _entry['device'] = _dev
+            elif _name == 'co2' and str(_scfg.get('type', '')).startswith('sensair'):
+                # Senseair K33: no device object, io.read_co2 does the whole
+                # transaction itself and dispatches on co2_sensor_config['type'].
+                from bioreactor_v3.src.io import read_co2 as _read_co2
+                _entry = {'name': _name, 'kind': 'direct', 'cast': _cast,
+                          'read_fn': (lambda: _read_co2(bioreactor))}
+            else:
                 continue
-        gas_sensors.append({'name': _name, 'device': _dev, 'delay': _gas_delay, 'cast': _cast})
+        gas_sensors.append(_entry)
     if gas_sensors:
         gas_sampler.configure(hw_lock=HARDWARE_LOCK, sensors=gas_sensors, sim=simulation_mode,
                               period_s=getattr(config, 'GAS_SAMPLE_PERIOD_S', 5.0))
@@ -956,36 +965,6 @@ async def eyespy_state(request: Request):
             v = read_eyespy_voltage(bioreactor, board_name)
             voltages.append(None if (v is None or (isinstance(v, float) and math.isnan(v))) else v)
     return EyespyState(status="success", voltages=voltages)
-
-
-# ---------------------------------------------------------------------------
-# CO2 Sensor
-# ---------------------------------------------------------------------------
-
-@app.get("/api/co2_sensor/state", response_model=CO2State)
-@limiter.limit(RATE_LIMIT)
-async def co2_state(request: Request):
-    require_component('co2_sensor')
-    if simulation_mode:
-        return CO2State(status="success", co2_ppm=round(400 + random.uniform(-20, 20), 1))
-    from bioreactor_v3.src.io import read_co2
-    ppm = read_co2(bioreactor)
-    return CO2State(status="success", co2_ppm=float(ppm) if ppm is not None else 0.0)
-
-
-# ---------------------------------------------------------------------------
-# O2 Sensor
-# ---------------------------------------------------------------------------
-
-@app.get("/api/o2_sensor/state", response_model=O2State)
-@limiter.limit(RATE_LIMIT)
-async def o2_state(request: Request):
-    require_component('o2_sensor')
-    if simulation_mode:
-        return O2State(status="success", o2_percent=round(20.9 + random.uniform(-0.5, 0.5), 2))
-    from bioreactor_v3.src.io import read_o2
-    pct = read_o2(bioreactor)
-    return O2State(status="success", o2_percent=float(pct) if pct is not None else 0.0)
 
 
 # ---------------------------------------------------------------------------
