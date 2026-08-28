@@ -4,6 +4,7 @@ Hardware configuration for the bioreactor API.
 Edit INIT_COMPONENTS to enable/disable hardware components.
 Only enabled components get API endpoints.
 """
+import os
 import sys
 from pathlib import Path
 from typing import Optional, Union
@@ -11,6 +12,25 @@ from typing import Optional, Union
 # Add bioreactor_v3 to path
 BIOREACTOR_V3_PATH = Path(__file__).parent / 'bioreactor_v3' / 'src'
 sys.path.insert(0, str(BIOREACTOR_V3_PATH))
+
+# Default CO2 ceiling for the relay dose guard (see RELAY_SAFETY below). The guard
+# refuses a dose when CO2 is near the top of what the sensor can read, so the number
+# tracks the sensor: the Atlas EZO-CO2 reads to 10000 ppm, the Senseair K33 to
+# ~100000. Prefix-matched the same way io.read_co2 dispatches on CO2_SENSOR_TYPE.
+CO2_MAX_PPM_BY_SENSOR = {'sensair': 95000, 'atlas': 7500}
+
+
+def _co2_max_ppm_for(sensor_type: str) -> int:
+    """Dose-guard CO2 ceiling for `sensor_type`, overridable with the
+    RELAY_CO2_MAX_PPM env var. An unrecognised sensor falls back to the tighter
+    Atlas ceiling rather than the permissive one."""
+    override = os.getenv('RELAY_CO2_MAX_PPM')
+    if override:
+        return int(float(override))
+    for prefix, ppm in CO2_MAX_PPM_BY_SENSOR.items():
+        if sensor_type.lower().startswith(prefix):
+            return ppm
+    return CO2_MAX_PPM_BY_SENSOR['atlas']
 
 class Config:
     """
@@ -214,7 +234,9 @@ class Config:
         'CO2': {
             'max_duration_s': 1.0,     # a dose (closed) auto-reverts to open after this
             'min_interval_s': 60.0,    # at most one dose per this window
-            'co2_max_ppm': 7500,       # refuse a dose if CO2 is above this (or unreadable)
+            # Refuse a dose if CO2 is above this (or unreadable). Derived from
+            # CO2_SENSOR_TYPE above: 7500 for the Atlas, 95000 for the K33.
+            'co2_max_ppm': _co2_max_ppm_for(CO2_SENSOR_TYPE),
         },
         'N2': {
             'max_duration_s': 1.0,     # same duration + frequency limits as CO2...
