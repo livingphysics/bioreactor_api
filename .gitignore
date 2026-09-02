@@ -95,3 +95,6 @@ coverage.xml
 .mypy_cache/
 .dmypy.json
 dmypy.json 
+
+# Per-rig hardware config (copy from bioreactor-api/config.example.py)
+bioreactor-api/config.py

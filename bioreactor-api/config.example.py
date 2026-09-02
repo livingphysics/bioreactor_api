@@ -1,4 +1,21 @@
 """
+TEMPLATE -- copy to bioreactor-api/config.py and edit for your rig:
+
+    cp bioreactor-api/config.example.py bioreactor-api/config.py
+
+config.py itself is gitignored because every value below is rig-specific.
+Start from this file rather than bioreactor_v3/src/config_default.py: the
+driver defaults do not carry the ~25 API-layer settings defined here (camera,
+history, data retention, gas/OD sampler tuning, pump rates) and, most
+importantly, RELAY_SAFETY. main.py reads that with
+getattr(config, 'RELAY_SAFETY', {}), so omitting it silently leaves the gas
+relays with NO dose guard -- no auto-revert, no rate limit, no CO2 ceiling.
+
+Values here are bioreactor01's. Re-check every one marked CALIBRATE or VERIFY
+before driving hardware -- in particular PUMPS serials/steps_per_ml and
+PELTIER_DIR_INVERTED, both of which are wiring-specific and have been wrong
+on this rig before.
+
 Hardware configuration for the bioreactor API.
 
 Edit INIT_COMPONENTS to enable/disable hardware components.
@@ -66,10 +83,13 @@ class Config:
     PELTIER_PWM_PIN: int = 21
     PELTIER_DIR_PIN: int = 20
     PELTIER_PWM_FREQ: int = 1000
-    # This rig's peltier is wired opposite the driver convention: verified 2026-07-03
-    # that 'heat' at 70% cooled the bath ~1.9 °C in 75s. Inverting the DIR pin makes
-    # heat/cool (and PID/schedules) physically correct for everyone.
-    PELTIER_DIR_INVERTED: bool = True
+    # DIR-pin polarity. True inverts it, for rigs wired opposite the driver
+    # convention. bioreactor01's peltier follows the driver convention, so this is
+    # False here; it was True (set 2026-07-03 from a rig where 'heat' at 70% cooled
+    # the bath ~1.9 °C in 75s), which made heat/cool backwards on this Pi.
+    # Verify empirically after changing: a wrong value makes the PID drive the wrong
+    # way, so a call for heat cools and the loop runs away from its setpoint.
+    PELTIER_DIR_INVERTED: bool = False
 
     # Data retention for API-generated run CSVs in bioreactor_v3/src/bioreactor_data/.
     # Old run files are pruned (oldest first) on startup and before each run so the

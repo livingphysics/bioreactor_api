@@ -25,7 +25,8 @@ submodule. No Docker, no queue, no web UI, no database.
     │       ├── components.py  # COMPONENT_REGISTRY + init_* functions
     │       ├── io.py          # set_led, get_temperature, read_co2, etc.
     │       └── config_default.py
-    ├── config.py              # Config(DefaultConfig) — INIT_COMPONENTS + pins
+    ├── config.example.py      # tracked template — copy to config.py per rig
+    ├── config.py              # GITIGNORED, per-rig: INIT_COMPONENTS + pins
     ├── main.py                # FastAPI app + all endpoints
     └── requirements.txt       # fastapi, uvicorn
 ```
