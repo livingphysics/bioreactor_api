@@ -10,7 +10,12 @@ this repo is just the HTTP wrapper.
 git clone <this-repo>
 cd bioreactor_website
 git submodule update --init
-cp config.py ./bioreactor-api/bioreactor_v3/src/
+
+# config.py is gitignored (per-rig); create it from the template and edit it
+cp bioreactor-api/config.example.py bioreactor-api/config.py
+
+# the submodule's src/__init__.py imports .config, so point it at the same file
+ln -sfn ../../config.py bioreactor-api/bioreactor_v3/src/config.py
 
 cd bioreactor-api
 pip install -r requirements.txt
@@ -52,6 +57,6 @@ curl http://localhost:9000/api/temp_sensor/state
 
 ## Configuration
 
-Edit [`bioreactor-api/config.py`](bioreactor-api/config.py) to enable/disable
+Edit `bioreactor-api/config.py` (your rig's copy, gitignored) to enable/disable
 components via the `INIT_COMPONENTS` dict. Only enabled components get
 endpoints; disabled ones return `503`.
