@@ -135,18 +135,42 @@ class Config:
     RING_LIGHT_COUNT: int = 32
     RING_LIGHT_SPI_SPEED: int = 800
 
-    # Optical Density (ADS1115 ADC)
-    OD_ADC_CHANNELS: dict[str, str] = {
-        '135': 'A0',
-        'Ref': 'A1',
-        '90': 'A2',
+    # ------------------------------------------------------------------------
+    # Optical inputs: VOLTAGE SOURCES + OD MEASUREMENTS
+    # (bioreactor_v3/src/optics.py, bioreactor_v3/docs/optics.md)
+    # ------------------------------------------------------------------------
+    # Every photodiode/ADC input, under a name of YOUR choosing. kind 'adc' = one ADS1115
+    # channel A0-A3 (needs INIT_COMPONENTS['optical_density']); kind 'eyespy' = one ADS1114
+    # eyespy board (needs INIT_COMPONENTS['eyespy_adc']). Each source: GET /api/voltage/<name>,
+    # listed by GET /api/voltages, and its own run-CSV column '<name>_V' unless an OD
+    # measurement consumes it. Shorthands: 'adc:A0', 'eyespy:0x49'.
+    VOLTAGE_SOURCES: dict = {
+        'pd_135':  {'kind': 'adc', 'channel': 'A0'},
+        'pd_ref':  {'kind': 'adc', 'channel': 'A1'},
+        'pd_90':   {'kind': 'adc', 'channel': 'A2'},
+        'eyespy1': {'kind': 'eyespy', 'i2c_address': 0x49, 'i2c_bus': 1, 'gain': 1.0},
+        'eyespy2': {'kind': 'eyespy', 'i2c_address': 0x4a, 'i2c_bus': 1, 'gain': 1.0},
     }
+
+    # The four canonical OD measurements: enabled or not, and which source feeds each
+    # (either kind). Enabled ones are IR-gated, logged as OD_<x>_V, served by
+    # GET /api/od/state and plotted by the dashboard (the ONLY optical series it shows).
+    # Shorthands: 'pd_135' (enabled, that source), False, True (enabled, source 'pd_<x>').
+    OD_MEASUREMENTS: dict = {
+        'OD_45':  {'enabled': False},
+        'OD_ref': {'enabled': True, 'source': 'pd_ref'},
+        'OD_90':  {'enabled': True, 'source': 'pd_90'},
+        'OD_135': {'enabled': True, 'source': 'pd_135'},
+    }
+
+    # OD column the run-CSV EKF tracks: an OD measurement ('OD_135'), its suffix, or a source.
+    EKF_OD_CHANNEL: str = 'OD_135'
 
     # IR-gated OD sampling (od_sampler.py). Every reading pulses the IR LED:
     #   LED on (OD_LED_POWER) -> settle (OD_SETTLE_S) -> read -> pause (OD_POST_READ_S) -> LED off.
     # Runs continuously (24/7) so the 24h OD history fills even when nobody's watching.
-    # When both OD and eyespy sources are present they interleave (one source per
-    # pulse), so each samples at half the pulse rate. The whole gated measurement is
+    # When both source kinds are present (ADS1115 channels, eyespy boards) they
+    # interleave (one kind per pulse), so each kind samples at half the pulse rate. The whole gated measurement is
     # held under HARDWARE_LOCK (so nothing toggles the LED mid-read), which means the
     # lock is occupied for ~settle+read+post each pulse. The 1 Hz heater safety loop
     # shares that lock, so keep the settle short to bound lock occupancy: an IR LED +
@@ -162,19 +186,11 @@ class Config:
                                      # gets a fresh OD reading. ~5x fewer IR pulses than 1 Hz,
                                      # which also cuts the ring-light SPI-noise glitching.
 
-    # Eyespy ADC (ADS1114, single-channel per board)
-    EYESPY_ADC: dict = {
-        'eyespy1': {
-            'i2c_address': 0x49,
-            'i2c_bus': 1,
-            'gain': 1.0,
-        },
-        'eyespy2': {
-            'i2c_address': 0x4a,
-            'i2c_bus': 1,
-            'gain': 1.0,
-        },
-    }
+    # LEGACY optical form (honoured when VOLTAGE_SOURCES / OD_MEASUREMENTS are absent, with
+    # the old column names OD_<chan>_V and Eyespy_<board>_raw/_V preserved):
+    #   OD_ADC_CHANNELS: dict[str, str] = {'135': 'A0', 'Ref': 'A1', '90': 'A2'}
+    #   EYESPY_ADC: dict = {'eyespy1': {'i2c_address': 0x49, 'i2c_bus': 1, 'gain': 1.0},
+    #                       'eyespy2': {'i2c_address': 0x4a, 'i2c_bus': 1, 'gain': 1.0}}
 
     # CO2 Sensor (Senseair K33, reads ppm). Speaks its own 4-byte ReadRAM frames,
     # not the Atlas EZO protocol — it does NOT answer a plain I2C receive-byte, so

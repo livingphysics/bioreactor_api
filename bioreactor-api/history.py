@@ -150,7 +150,10 @@ class HistoryBuffer:
             pt["pump_time_s"] = {k: _num(v, 2) for k, v in pump_time.items()}
         od = data.get("od")
         if isinstance(od, dict):
-            pt["od"] = {k: _num(v, 5) for k, v in od.items()}   # truncate ADC readings
+            pt["od"] = {k: _num(v, 5) for k, v in od.items()}   # OD measurements (OD_x -> V)
+        volt = data.get("volt")
+        if isinstance(volt, dict) and volt:
+            pt["volt"] = {k: _num(v, 5) for k, v in volt.items()}   # unmapped voltage sources
         with self._lock:
             self._buf.append(pt)
             self._evict()

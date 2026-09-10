@@ -5,9 +5,10 @@ A background thread that measures OD by pulsing the IR LED for every reading:
 
     LED on (od_led_power)  ->  settle  ->  read source  ->  post-read pause  ->  LED off
 
-When both OD and eyespy sources are active it INTERLEAVES them: one source per LED
-pulse, alternating, so each source samples at half the pulse rate (0.5 Hz each when
-the pulse period is 1 s; 1 Hz for a single source).
+Sources are grouped by KIND ('adc' = ADS1115 channels, 'eyespy' = ADS1114 boards) and
+keyed by voltage-source NAME. When both kinds are present it INTERLEAVES them: one kind
+per LED pulse, alternating, so each kind samples at half the pulse rate. latest() is
+{source name: volts}; main.py maps it onto the canonical OD measurements.
 
 The whole gated measurement runs under HARDWARE_LOCK so the LED can't be toggled
 mid-measurement by the heater loop / other I2C readers. The most recent reading is
@@ -33,8 +34,8 @@ class ODSampler:
         # dependencies (set via configure)
         self._hw_lock = None               # control.HARDWARE_LOCK
         self._set_led = None               # callable(power_percent)
-        self._read_fns = {}                # {'od': fn(ch)->v, 'eyespy': fn(ch)->v}
-        self._sources = []                 # [('od', [chans...]), ('eyespy', [chans...])]
+        self._read_fns = {}                # {kind: fn(source_name)->volts}
+        self._sources = []                 # [(kind, [source names...]), ...]
         self._ring_dodge = None            # callable(active): ring off for the read, then restore
         self._sim = False
 
@@ -46,7 +47,7 @@ class ODSampler:
         self._period_s = 1.0
 
         # state
-        self._latest = {}                  # {channel: volts}
+        self._latest = {}                  # {source name: volts}
         self._latest_t = 0                 # ms
         self._src_idx = 0
 
@@ -86,7 +87,7 @@ class ODSampler:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="od-sampler")
         self._thread.start()
-        logger.info("OD sampler started (sources=%s, %.1f%% LED, %.2fs settle, %.1fs period)",
+        logger.info("OD sampler started (kinds=%s, %.1f%% LED, %.2fs settle, %.1fs period)",
                     [s[0] for s in self._sources], self._led_power, self._settle_s, self._period_s)
 
     def stop(self):
@@ -145,7 +146,7 @@ class ODSampler:
             "led_power": self._led_power,
             "settle_s": self._settle_s,
             "period_s": self._period_s,
-            "sources": [s[0] for s in self._sources],
+            "kinds": [s[0] for s in self._sources],
         }
 
     # ------------------------------------------------------------------ loop
@@ -163,8 +164,8 @@ class ODSampler:
             self._stop.wait(max(0.0, self._period_s - (time.time() - t0)))
 
     def _measure_once(self, srcs):
-        # interleave: one source per pulse, alternating
-        name, chans = srcs[self._src_idx % len(srcs)]
+        # interleave: one KIND per pulse (all its sources read together), alternating
+        kind, chans = srcs[self._src_idx % len(srcs)]
         self._src_idx += 1
         readings = {}
 
@@ -175,7 +176,7 @@ class ODSampler:
             with self._lock:
                 power = self._led_power
                 settle, post = self._settle_s, self._post_read_s
-            fn = self._read_fns.get(name)
+            fn = self._read_fns.get(kind)
             # Atomic gated measurement: hold the bus so nothing toggles the LED mid-read.
             with self._hw_lock:
                 dodged = False
