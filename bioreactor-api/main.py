@@ -56,11 +56,13 @@ simulation_mode = True
 initialized_components: Dict[str, bool] = {}
 
 # Optical density. The sampler always reads every AVAILABLE source (od + eyespy);
-# `od_mode` is the shared *display* selection the frontend defaults to (settable via
-# POST /api/od/mode). Set in lifespan.
-od_mode = 'none'          # display mode: 'od' | 'eyespy' | 'both' | 'none'
-od_available = {'od': False, 'eyespy': False}
-od_channels = {'od': [], 'eyespy': []}   # source -> ordered channel/board names
+# Optical plan (bioreactor_v3/src/optics.py): named VOLTAGE SOURCES (ADS1115 channels /
+# eyespy boards) and the canonical OD MEASUREMENTS OD_45/OD_ref/OD_90/OD_135 mapped onto
+# them. `optics` is the resolved OpticalPlan; `od_available` is True when at least one
+# enabled OD measurement's hardware component is up. The OD sampler's cache is keyed by
+# SOURCE name; /api/state maps it onto OD measurement names.
+optics = None
+od_available = False
 
 # Last commanded LED power (the driver doesn't report it back, so we shadow it here).
 led_power = 0.0
@@ -158,11 +160,13 @@ class TemperatureState(BaseModel):
 class ODState(BaseModel):
     status: str
     voltages: list
+    names: list = []
     unit: str = "volts"
 
 class EyespyState(BaseModel):
     status: str
     voltages: list
+    names: list = []
     unit: str = "volts"
 
 class AmbientTempState(BaseModel):
@@ -290,24 +294,15 @@ async def lifespan(app: FastAPI):
         )
 
     # Optical-density sources available (from config.py via what actually initialized).
-    global od_mode, od_channels, od_available
-    od_available = {'od': bool(initialized_components.get('optical_density')),
-                    'eyespy': bool(initialized_components.get('eyespy_adc'))}
-    od_channels = {
-        'od': list(getattr(config, 'OD_ADC_CHANNELS', {}).keys()) if od_available['od'] else [],
-        'eyespy': list(getattr(config, 'EYESPY_ADC', {}).keys()) if od_available['eyespy'] else [],
-    }
-    # Default display mode: both if both available, else whichever, else none.
-    if od_available['od'] and od_available['eyespy']:
-        od_mode = 'both'
-    elif od_available['od']:
-        od_mode = 'od'
-    elif od_available['eyespy']:
-        od_mode = 'eyespy'
-    else:
-        od_mode = 'none'
-    logger.info("Optical density: available=%s default mode=%s channels=%s",
-                od_available, od_mode, od_channels)
+    global optics, od_available
+    optics = bioreactor.optics if bioreactor is not None else _resolve_optics(config)
+    for _e in optics.errors:
+        logger.error("Optical config: %s", _e)
+    for _w in optics.warnings:
+        logger.warning("Optical config: %s", _w)
+    od_available = any(initialized_components.get(optics.sources[s].component, False)
+                       for s in optics.od.values())
+    logger.info("Optical plan: %s; od_available=%s", _describe_optics(optics), od_available)
 
     # Seed the ring-light shadow from the driver's current colour (best-effort).
     global ring_color
@@ -321,21 +316,23 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Could not read initial ring-light colour: %s", e)
 
-    # IR-gated OD sampler: pulses the LED per reading (on -> settle -> read -> off),
-    # interleaving OD/eyespy when both are present. Its latest reading feeds /api/state
-    # and the history buffer (via _read_od). Started before history so OD is available.
-    if od_available['od'] or od_available['eyespy']:
+    # IR-gated OD sampler: pulses the LED per reading (on -> settle -> read -> off).
+    # Started before history so OD is available.
+    # One LED pulse per SOURCE KIND (all ADS1115 channels together, all eyespy boards
+    # together), interleaved when both kinds exist. The cache ({source: V}) feeds /api/state
+    # (mapped onto OD measurements), the history buffer and the run CSV (od_override).
+    src_groups = [(kind, [s.name for s in optics.sources_of(kind)
+                          if initialized_components.get(s.component, False)])
+                  for kind in ('adc', 'eyespy')]
+    if any(names for _k, names in src_groups):
         od_ring_dodge = None
         if simulation_mode:
             od_set_led, od_read_fns = (lambda p: None), {}
         else:
-            from bioreactor_v3.src.io import (
-                set_led as _od_set_led, read_voltage as _od_rv,
-                read_eyespy_voltage as _od_rev,
-            )
+            from bioreactor_v3.src.io import set_led as _od_set_led, read_voltage as _od_rv
             od_set_led = lambda p: _od_set_led(bioreactor, p)
-            od_read_fns = {'od': lambda ch: _od_rv(bioreactor, ch),
-                           'eyespy': lambda b: _od_rev(bioreactor, b)}
+            _read_src = lambda name: _od_rv(bioreactor, name)      # both kinds, by source name
+            od_read_fns = {'adc': _read_src, 'eyespy': _read_src}
             # Dodge the ring around each OD read (off during the IR-on window, restored
             # after): keeps its light off the photodiodes and off through the IR-PWM
             # noisy window; the restore re-asserts the colour, correcting any glitch.
@@ -343,7 +340,7 @@ async def lifespan(app: FastAPI):
                 od_ring_dodge = _ring_dodge
         od_sampler.configure(
             hw_lock=HARDWARE_LOCK, set_led=od_set_led, read_fns=od_read_fns,
-            sources=[('od', od_channels['od']), ('eyespy', od_channels['eyespy'])],
+            sources=src_groups,
             sim=simulation_mode,
             enabled=getattr(config, 'OD_SAMPLE_ENABLED', True),
             led_power=getattr(config, 'OD_LED_POWER', 10.0),
@@ -590,10 +587,10 @@ async def state(request: Request):
         "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
         "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
         "od": _read_od(),
-        "od_mode": od_mode,
-        "od_channels": od_channels,
+        "od_measurements": dict(optics.od) if optics is not None else {},
         "od_available": od_available,
-        "od_sampling": od_sampler.status() if (od_available['od'] or od_available['eyespy']) else None,
+        "od_sampling": od_sampler.status() if od_sampler.has_sources else None,
+        "voltages": _read_voltages(),
         "led": {"power": led_power, "active": led_power > 0} if initialized_components.get('led') else None,
         "ring": {**ring_color, "active": any(ring_color.values())} if initialized_components.get('ring_light') else None,
         "stirrer": _stirrer_state(),
@@ -623,6 +620,12 @@ async def capabilities(request: Request):
                 "type": "sensor",
                 "state": f"/api/{name}/state",
             }
+    if optics is not None and optics.od:
+        caps["od"] = {"type": "sensor", "state": "/api/od/state",
+                      "measurements": dict(optics.od), "available": od_available}
+    if optics is not None and optics.sources:
+        caps["voltages"] = {"type": "sensor", "state": "/api/voltages",
+                            "each": "/api/voltage/{name}", "names": list(optics.sources)}
     return caps
 
 
@@ -932,18 +935,11 @@ async def o2_sensor_state(request: Request):
 @app.get("/api/optical_density/state", response_model=ODState)
 @limiter.limit(RATE_LIMIT)
 async def od_state(request: Request):
+    """Deprecated alias: un-gated live voltages of the ADS1115 sources, positional in plan
+    order (`names` gives the order). Prefer GET /api/od/state or GET /api/voltages."""
     require_component('optical_density')
-    if simulation_mode:
-        channels = getattr(_get_config(), 'OD_ADC_CHANNELS', {'135': 'A0', 'Ref': 'A1', '90': 'A2'})
-        voltages = [round(random.uniform(0.5, 2.5), 4) for _ in channels]
-        return ODState(status="success", voltages=voltages)
-    from bioreactor_v3.src.io import read_voltage
-    voltages = []
-    if hasattr(bioreactor, 'cfg') and hasattr(bioreactor.cfg, 'OD_ADC_CHANNELS'):
-        for ch_name in bioreactor.cfg.OD_ADC_CHANNELS.keys():
-            v = read_voltage(bioreactor, ch_name)
-            voltages.append(None if (v is None or (isinstance(v, float) and math.isnan(v))) else v)
-    return ODState(status="success", voltages=voltages)
+    names = _source_names('adc')
+    return ODState(status="success", names=names, voltages=[_live_voltage(n) for n in names])
 
 
 # ---------------------------------------------------------------------------
@@ -953,18 +949,11 @@ async def od_state(request: Request):
 @app.get("/api/eyespy_adc/state", response_model=EyespyState)
 @limiter.limit(RATE_LIMIT)
 async def eyespy_state(request: Request):
+    """Deprecated alias: un-gated live voltages of the eyespy sources, positional in plan
+    order (`names` gives the order). Prefer GET /api/od/state or GET /api/voltages."""
     require_component('eyespy_adc')
-    if simulation_mode:
-        boards = getattr(_get_config(), 'EYESPY_ADC', {})
-        voltages = [round(random.uniform(1.0, 3.0), 4) for _ in boards]
-        return EyespyState(status="success", voltages=voltages)
-    from bioreactor_v3.src.io import read_eyespy_voltage
-    voltages = []
-    if hasattr(bioreactor, 'cfg') and hasattr(bioreactor.cfg, 'EYESPY_ADC'):
-        for board_name in bioreactor.cfg.EYESPY_ADC.keys():
-            v = read_eyespy_voltage(bioreactor, board_name)
-            voltages.append(None if (v is None or (isinstance(v, float) and math.isnan(v))) else v)
-    return EyespyState(status="success", voltages=voltages)
+    names = _source_names('eyespy')
+    return EyespyState(status="success", names=names, voltages=[_live_voltage(n) for n in names])
 
 
 # ---------------------------------------------------------------------------
@@ -1103,7 +1092,8 @@ async def api_history(request: Request, since: int = 0):
     """Rolling history of temp/ambient/current. `?since=<ms>` returns only points
     newer than that timestamp (cheap incremental polling)."""
     return {"status": "success", "interval_s": history.interval_s,
-            "od_mode": od_mode, "od_channels": od_channels, "od_available": od_available,
+            "od_measurements": dict(optics.od) if optics is not None else {},
+            "od_available": od_available,
             "archive_earliest_ms": history.earliest_ms(),
             "points": history.get(since_ms=since)}
 
@@ -1116,36 +1106,59 @@ async def api_history_range(request: Request, start: int = 0, end: int = 0):
     the 'since program start' plot view; long ranges are downsampled server-side. Same
     payload shape as /api/history so the frontend can reuse its ingest path."""
     return {"status": "success", "interval_s": history.interval_s,
-            "od_mode": od_mode, "od_channels": od_channels, "od_available": od_available,
+            "od_measurements": dict(optics.od) if optics is not None else {},
+            "od_available": od_available,
             "points": history.read_range(start_ms=start, end_ms=(end or None))}
 
 
-class ODModeRequest(BaseModel):
-    mode: str = Field(pattern="^(od|eyespy|both|none)$", description="od | eyespy | both")
-
-
-def _valid_od_modes():
-    modes = []
-    if od_available['od']:
-        modes.append('od')
-    if od_available['eyespy']:
-        modes.append('eyespy')
-    if od_available['od'] and od_available['eyespy']:
-        modes.append('both')
-    return modes or ['none']
-
-
-@app.post("/api/od/mode")
+@app.get("/api/od/state")
 @limiter.limit(RATE_LIMIT)
-async def set_od_mode(request: Request, req: ODModeRequest):
-    """Set the shared optical-density display mode (od | eyespy | both)."""
-    global od_mode
-    valid = _valid_od_modes()
-    if req.mode not in valid:
-        raise HTTPException(status_code=400, detail=f"mode must be one of {valid}")
-    od_mode = req.mode
-    return {"status": "success", "od_mode": od_mode,
-            "od_channels": od_channels, "od_available": od_available}
+async def od_measurements_state(request: Request):
+    """The canonical OD measurements (OD_45 / OD_ref / OD_90 / OD_135) from the last
+    IR-gated sampler pulse, plus the voltage source feeding each. A null value means the
+    measurement has not been taken yet or sampling is off."""
+    if optics is None or not optics.od:
+        raise HTTPException(status_code=503, detail="No OD measurements configured (OD_MEASUREMENTS)")
+    return {"status": "success",
+            "od": _read_od() or {k: None for k in optics.od},
+            "measurements": dict(optics.od),
+            "available": od_available,
+            "sampling": od_sampler.status() if od_sampler.has_sources else None,
+            "unit": "volts"}
+
+
+@app.get("/api/voltages")
+@limiter.limit(RATE_LIMIT)
+async def voltages_state(request: Request):
+    """Every named voltage source: kind, the OD measurements it feeds, its last IR-gated
+    reading (`gated`, from the sampler) and an instantaneous un-gated reading taken now
+    (`live`, IR LED not pulsed)."""
+    if optics is None or not optics.sources:
+        raise HTTPException(status_code=503, detail="No voltage sources configured (VOLTAGE_SOURCES)")
+    gated = _read_voltages() or {}
+    out = {}
+    for name, spec in optics.sources.items():
+        avail = bool(initialized_components.get(spec.component, False))
+        out[name] = {"kind": spec.kind, "component": spec.component, "available": avail,
+                     "od": optics.od_names_for_source(name),
+                     "gated": gated.get(name), "live": _live_voltage(name) if avail else None}
+    return {"status": "success", "voltages": out, "unit": "volts"}
+
+
+@app.get("/api/voltage/{name}")
+@limiter.limit(RATE_LIMIT)
+async def voltage_state(request: Request, name: str):
+    """One named voltage source (see GET /api/voltages for the fields)."""
+    if optics is None or name not in optics.sources:
+        raise HTTPException(status_code=404, detail=f"unknown voltage source '{name}'"
+                            + (f"; known: {list(optics.sources)}" if optics is not None else ""))
+    spec = optics.sources[name]
+    if not initialized_components.get(spec.component, False):
+        raise HTTPException(status_code=503, detail=f"'{name}' needs component '{spec.component}', which is not available")
+    gated = (_read_voltages() or {}).get(name)
+    return {"status": "success", "name": name, "kind": spec.kind, "component": spec.component,
+            "od": optics.od_names_for_source(name), "gated": gated, "live": _live_voltage(name),
+            "unit": "volts"}
 
 
 class ODSamplingRequest(BaseModel):
@@ -1161,7 +1174,7 @@ async def set_od_sampling(request: Request, req: ODSamplingRequest):
 
     The LED only lights briefly during each gated reading (never steady-on); `enabled`
     gates whether the sampler runs at all, `led_power` sets the illumination level."""
-    if not (od_available['od'] or od_available['eyespy']):
+    if not od_sampler.has_sources:
         raise HTTPException(status_code=503, detail="No optical-density source available")
     if req.enabled is None and req.led_power is None:
         raise HTTPException(status_code=400, detail="provide 'enabled' and/or 'led_power'")
@@ -1303,6 +1316,7 @@ def _read_signals():
             "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
             "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
             "od": _read_od(),
+            "volt": _read_unmapped_voltages(),
             "peltier_duty": pduty,
             **_actuator_signals(),
         }
@@ -1339,15 +1353,93 @@ def _read_signals():
             "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
             "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
             "od": _read_od(),
+            "volt": _read_unmapped_voltages(),
             "peltier_duty": pduty,
             **_actuator_signals()}
 
 
 def _read_od():
-    """Latest IR-gated OD reading from the OD sampler ({channel: volts}, or None if
-    no OD source / sampling disabled). The gated measurement (LED on -> read -> off)
-    happens on the od_sampler thread, not here."""
-    return od_sampler.latest()
+    """Latest IR-gated OD measurements {OD_x: volts|None}, mapped from the sampler cache
+    ({source: volts}); None if no OD measurement is configured, sampling is off, or
+    nothing has been measured yet. The gated measurement (LED on -> read -> off) happens
+    on the od_sampler thread, not here."""
+    if optics is None or not optics.od:
+        return None
+    cache = od_sampler.latest()
+    if cache is None:
+        return None
+    return {od: cache.get(src) for od, src in optics.od.items()}
+
+
+def _read_voltages():
+    """Latest IR-gated reading of every voltage source ({source: volts|None}) or None."""
+    if optics is None or not optics.sources:
+        return None
+    cache = od_sampler.latest()
+    if cache is None:
+        return None
+    return {name: cache.get(name) for name in optics.sources}
+
+
+def _read_unmapped_voltages():
+    """Gated readings of sources no OD measurement consumes (archived as history 'volt')."""
+    cache = _read_voltages()
+    if not cache or optics is None:
+        return None
+    return {n: cache.get(n) for n in optics.unmapped_sources()} or None
+
+
+def _source_names(kind):
+    """Names of the plan's sources of one kind ('adc' | 'eyespy'), plan order."""
+    return [s.name for s in optics.sources_of(kind)] if optics is not None else []
+
+
+def _live_voltage(name):
+    """Instantaneous un-gated reading of one source (IR LED not pulsed), None on error.
+    Serialized on HARDWARE_LOCK against the samplers and the run loop."""
+    if simulation_mode:
+        return round(random.uniform(0.5, 2.5), 4)
+    if bioreactor is None:
+        return None
+    from bioreactor_v3.src.io import read_voltage
+    try:
+        with HARDWARE_LOCK:
+            v = read_voltage(bioreactor, name, quiet=True)
+    except Exception as e:
+        logger.warning("live voltage read failed for %s: %s", name, e)
+        return None
+    return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
+
+
+def _load_optics_module():
+    """bioreactor_v3/src/optics.py: the submodule package on the rig; for local simulation
+    with an empty submodule dir, the file itself from the submodule or a sibling
+    bioreactor_v3 checkout (it is pure Python, so loading it by path is safe)."""
+    try:
+        from bioreactor_v3.src import optics as mod
+        return mod
+    except ImportError:
+        pass
+    import importlib.util
+    here = Path(__file__).resolve().parent
+    for cand in (here / 'bioreactor_v3' / 'src' / 'optics.py',
+                 here.parent.parent / 'bioreactor_v3' / 'src' / 'optics.py'):
+        if cand.is_file():
+            spec = importlib.util.spec_from_file_location('bioreactor_v3_optics', cand)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules['bioreactor_v3_optics'] = mod
+            spec.loader.exec_module(mod)
+            return mod
+    raise RuntimeError("bioreactor_v3/src/optics.py not found: run 'git submodule update --init' "
+                       "or clone bioreactor_v3 next to bioreactor_website")
+
+
+def _resolve_optics(config):
+    return _load_optics_module().resolve_optical_config(config)
+
+
+def _describe_optics(plan):
+    return _load_optics_module().describe(plan)
 
 
 def _stirrer_state():

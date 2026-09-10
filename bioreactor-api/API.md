@@ -174,19 +174,41 @@ Response: `{"status": "success", "o2_percent": 20.9, "unit": "percent"}`
 
 ---
 
-### Optical Density
+### Optical density (OD measurements)
+
+The four canonical OD measurements `OD_45` / `OD_ref` / `OD_90` / `OD_135` are configured
+in `config.py` (`OD_MEASUREMENTS`), each fed by a named voltage source (`VOLTAGE_SOURCES`,
+an ADS1115 channel or an eyespy board). Values come from the IR-gated background sampler;
+`null` = not measured yet / sampling off.
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/optical_density/state
+curl -H "Authorization: Bearer $API_KEY" https://<host>/api/od/state
 ```
-Response: `{"status": "success", "voltages": [1.23, 2.45, 0.98], "unit": "volts"}`
+Response: `{"status": "success", "od": {"OD_ref": 0.81, "OD_90": 1.08, "OD_135": 0.50}, "measurements": {"OD_ref": "pd_ref", "OD_90": "pd_90", "OD_135": "pd_135"}, "available": true, "sampling": {"enabled": true, "led_power": 10, "kinds": ["adc", "eyespy"], ...}, "unit": "volts"}`
+
+The same `od`, `od_measurements`, `od_available` and `od_sampling` fields are in `GET /api/state`.
+
+**IR-gated sampling control** (on/off + LED power for each gated reading):
+```bash
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"enabled": true, "led_power": 10}' https://<host>/api/od/sampling
+```
 
 ---
 
-### Eyespy ADC
+### Voltage sources
+
+Every configured source by name, with its kind, the OD measurements it feeds, the last
+IR-gated reading (`gated`) and an instantaneous un-gated reading taken now (`live`).
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/eyespy_adc/state
+curl -H "Authorization: Bearer $API_KEY" https://<host>/api/voltages
+curl -H "Authorization: Bearer $API_KEY" https://<host>/api/voltage/pd_135
 ```
-Response: `{"status": "success", "voltages": [2.1, 1.8], "unit": "volts"}`
+Response (single): `{"status": "success", "name": "pd_135", "kind": "adc", "component": "optical_density", "od": ["OD_135"], "gated": 0.504, "live": 0.51, "unit": "volts"}`
+(`404` for an unknown name, `503` if the source's hardware component is down.)
+
+Deprecated aliases, kept for old scripts: `GET /api/optical_density/state` and
+`GET /api/eyespy_adc/state` return the un-gated voltages of the ADS1115 / eyespy sources as a
+positional list plus `names`.
 
 ---
 
