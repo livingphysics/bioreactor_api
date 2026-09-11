@@ -1,34 +1,64 @@
 # Bioreactor API Reference
 
-Base URL: `https://issued-fantasy-fighter-specials.trycloudflare.com`
+REST interface to the bioreactor hardware, served by `main.py` on the Pi
+(port 9000, bound to `0.0.0.0`).
 
-All endpoints require authentication:
+## Base URL
+
+There is no fixed public hostname. Pick whichever path you have:
+
+```bash
+BASE=http://mori:9000                 # over the tailnet (normal path — Pi stays private)
+BASE=http://localhost:9000            # on the Pi itself, or a local simulation run
+BASE=https://<name>.trycloudflare.com # only if a cloudflared tunnel is running
+```
+
+All examples below use `$BASE` and `$API_KEY`.
+
+## Authentication
+
+Every route — `/health` included — requires a bearer token when the Pi API is
+started with `API_KEY` set:
+
 ```
 Authorization: Bearer <API_KEY>
 ```
+
+If `API_KEY` is unset the server logs a warning and skips auth entirely (dev
+mode only — never do this on a rig reachable from anything but localhost).
+
+Rate limit: `RATE_LIMIT` env var, default **100/minute**, keyed per client IP
+(Cloudflare `CF-Connecting-IP` / `X-Forwarded-For` aware).
 
 ---
 
 ## System
 
-### Health Check
+### Health check
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/health
+curl -H "Authorization: Bearer $API_KEY" $BASE/health
+```
+Response: `{"status": "healthy", "hardware_mode": "real", "hardware_available": true, "initialized_components": {...}}`
+
+### List capabilities
+Which components came up, and the endpoint pattern for each. Components that
+failed to initialize (or are `False` in `INIT_COMPONENTS`) are absent here and
+return `503` on their routes.
+```bash
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/capabilities
 ```
 
-### List Capabilities
+### Aggregate state
+One call returns everything the live monitor needs — poll this at ~1 Hz instead
+of hitting each endpoint separately. Unavailable components report `null`.
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/capabilities
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/state
 ```
-
-### Aggregate State (for the live monitor)
-One call returns bath temp, ambient temp, signed peltier current, peltier
-duty/direction, and heater-run status — poll this at ~1 Hz instead of hitting
-each sensor endpoint separately.
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/state
-```
-Response: `{"status": "success", "temperature": 24.2, "ambient_temp": 24.4, "peltier_current": 0.02, "peltier": {"duty_cycle": 0, "direction": "cool", "active": false}, "heater": {...}}`
+Response keys: `timestamp`, `temperature`, `ambient_temp`, `peltier_current`
+(signed: negative while heating), `peltier` `{duty_cycle, direction, active}`,
+**`run`** (the full run status, same object as `GET /api/run/status`), `co2`,
+`o2`, `od`, `od_measurements`, `od_available`, `od_sampling`, `voltages`, `led`,
+`ring`, `stirrer`, `pumps`, `relays`.
 
 ---
 
@@ -36,238 +66,334 @@ Response: `{"status": "success", "temperature": 24.2, "ambient_temp": 24.4, "pel
 
 ### LED
 
-**Get state:**
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/led/state
-```
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/led/state
 
-**Set power (0-100%):**
-```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"power": 50}' https://<host>/api/led/control
+  -d '{"power": 50}' $BASE/api/led/control
 ```
+`power`: 0–100.
 
 ---
 
-### Peltier (Temperature Control)
+### Peltier (manual / open loop)
 
-**Get state:**
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/peltier_driver/state
-```
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/peltier_driver/state
 
-**Set duty cycle and direction:**
-```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"duty_cycle": 50, "direction": "heat"}' https://<host>/api/peltier_driver/control
+  -d '{"duty_cycle": 50, "direction": "heat"}' $BASE/api/peltier_driver/control
 ```
+`duty_cycle`: 0–100. `direction`: `heat` | `cool` | `forward` | `reverse`
+(`forward` == `cool`, `reverse` == `heat`).
 
-Direction options: `heat`, `cool`, `forward`, `reverse`
+While a **schedule** or **PID** run is active this returns `409` — stop the run
+first. During a **program** run it is allowed and becomes an override: the
+program leaves the peltier alone until that track's next step reclaims it.
+
+> Direction vocabulary differs between the two reads: `/api/peltier_driver/state`
+> reports `forward`/`reverse`, `/api/state` reports `cool`/`heat`. Same underlying
+> flag.
 
 ---
 
 ### Stirrer
 
-**Get state:**
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/stirrer/state
-```
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/stirrer/state
 
-**Set duty cycle (0-100%):**
-```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"duty_cycle": 50}' https://<host>/api/stirrer/control
+  -d '{"duty_cycle": 50}' $BASE/api/stirrer/control
 ```
 
 ---
 
-### Ring Light
+### Ring light
 
-**Get state:**
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/ring_light/state
-```
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/ring_light/state
 
-**Set color (RGB 0-255):**
-```bash
+# whole ring
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"red": 30, "green": 30, "blue": 30}' https://<host>/api/ring_light/control
-```
+  -d '{"red": 30, "green": 30, "blue": 30}' $BASE/api/ring_light/control
 
-**Set specific pixel:**
-```bash
+# one pixel
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"red": 255, "green": 0, "blue": 0, "pixel_index": 0}' https://<host>/api/ring_light/control
+  -d '{"red": 255, "green": 0, "blue": 0, "pixel_index": 0}' $BASE/api/ring_light/control
 ```
+RGB 0–255; `pixel_index` omitted/null = all pixels.
 
 ---
 
 ### Pumps
 
-**Get state:**
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/pumps/state
-```
+Two interfaces: direct velocity control, and the timed media-exchange regime the
+dashboard and program tracks use.
 
-**Control pump (velocity in mL/s, negative for reverse):**
+**Direct velocity** (mL/s, negative = reverse):
 ```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"pump_name": "inflow", "velocity": 1.5}' https://<host>/api/pumps/control
+  -d '{"pump_name": "inflow", "velocity": 1.5}' $BASE/api/pumps/control
 ```
+
+> `GET /api/pumps/state` is a **stub in real mode** — it returns
+> `{"pump_name": "all", "velocity": 0.0, "active": <pumps initialized>}` rather
+> than reading the hardware. For the actual dosing regime use the `pumps` field of
+> `GET /api/state` (that one is `pump_controller.status()`).
+
+**Timed dosing** — every `duration` seconds, run outflow for `duration × duty`
+and inflow for `0.95 × duration × duty`, so each cycle nets a small removal:
+```bash
+# repeat until stopped
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"duration": 600, "duty_cycle": 10, "flow_rate": 1.0}' $BASE/api/pumps/run
+
+# a single cycle, then stop
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"duration": 600, "duty_cycle": 10}' $BASE/api/pumps/dose
+
+# both pumps off
+curl -X POST -H "Authorization: Bearer $API_KEY" $BASE/api/pumps/stop
+```
+`duration` > 0 (seconds), `duty_cycle` 0–100 (0 stops), `flow_rate` optional
+(mL/s; omit to keep the current value). All three count as a manual override of a
+program's `pump` track until its next step.
 
 ---
 
 ### Relays
 
-**Get state:**
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/relays/state
-```
+Relays are addressed by the names in `config.RELAYS`. `open` = de-energized
+(the boot state), `closed` = energized.
 
-**Set relay state:**
 ```bash
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/relays/state
+
+# open | closed | toggle
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"relay_name": "heater", "state": true}' https://<host>/api/relays/control
+  -d '{"relay_name": "relay_1", "command": "closed"}' $BASE/api/relays/control
+
+# command now, then toggle after `duration` seconds (one-shot timed pulse)
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"relay_name": "relay_1", "command": "closed", "duration": 30}' $BASE/api/relays/timed
 ```
+Response: `{"status": "success", "states": {"relay_1": "closed", ...}, "pending": {"relay_1": 28.4}, "guards": {...}}`
+
+Relays listed in `config.RELAY_SAFETY` are dose-guarded (auto-revert, rate limit,
+CO₂ ceiling); a command the guard refuses returns `409`. An unknown relay name is
+`404`; an invalid command is `422`.
 
 ---
 
 ## Sensors
 
-### Temperature
+| Endpoint | Response field |
+|---|---|
+| `GET /api/temp_sensor/state` | `temperature` (°C) |
+| `GET /api/ambient_temp/state` | `temperature` (°C) |
+| `GET /api/peltier_current/state` | `current` (A, unsigned — `/api/state` signs it) |
+| `GET /api/co2_sensor/state` | `co2_ppm` (from the background gas sampler cache) |
+| `GET /api/o2_sensor/state` | `o2_percent` (from the background gas sampler cache) |
+
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/temp_sensor/state
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/temp_sensor/state
 ```
 Response: `{"status": "success", "temperature": 23.5, "unit": "celsius"}`
 
 ---
 
-### Ambient Temperature
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/ambient_temp/state
-```
-Response: `{"status": "success", "temperature": 22.4, "unit": "celsius"}`
-
----
-
-### Peltier Current
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/peltier_current/state
-```
-Response: `{"status": "success", "current": 1.73, "unit": "amps"}`
-
----
-
-### CO2
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/co2_sensor/state
-```
-Response: `{"status": "success", "co2_ppm": 415.2, "unit": "ppm"}`
-
----
-
-### O2
-```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/o2_sensor/state
-```
-Response: `{"status": "success", "o2_percent": 20.9, "unit": "percent"}`
-
----
-
 ### Optical density (OD measurements)
 
-The four canonical OD measurements `OD_45` / `OD_ref` / `OD_90` / `OD_135` are configured
-in `config.py` (`OD_MEASUREMENTS`), each fed by a named voltage source (`VOLTAGE_SOURCES`,
-an ADS1115 channel or an eyespy board). Values come from the IR-gated background sampler;
-`null` = not measured yet / sampling off.
+The four canonical measurements `OD_45` / `OD_ref` / `OD_90` / `OD_135` are
+configured in `config.py` (`OD_MEASUREMENTS`), each fed by a named voltage source
+(`VOLTAGE_SOURCES`, an ADS1115 channel or an eyespy board). Values come from the
+IR-gated background sampler; `null` = not measured yet / sampling off. See
+`bioreactor_v3/docs/optics.md` for the configuration model.
+
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/od/state
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/od/state
 ```
-Response: `{"status": "success", "od": {"OD_ref": 0.81, "OD_90": 1.08, "OD_135": 0.50}, "measurements": {"OD_ref": "pd_ref", "OD_90": "pd_90", "OD_135": "pd_135"}, "available": true, "sampling": {"enabled": true, "led_power": 10, "kinds": ["adc", "eyespy"], ...}, "unit": "volts"}`
+Response: `{"status": "success", "od": {"OD_ref": 0.81, "OD_90": 1.08, "OD_135": 0.50}, "measurements": {"OD_ref": "pd_ref", ...}, "available": true, "sampling": {"enabled": true, "led_power": 10, "kinds": ["adc", "eyespy"], ...}, "unit": "volts"}`
 
-The same `od`, `od_measurements`, `od_available` and `od_sampling` fields are in `GET /api/state`.
+`503` if no OD measurements are configured. The same `od`, `od_measurements`,
+`od_available` and `od_sampling` fields appear in `GET /api/state`.
 
-**IR-gated sampling control** (on/off + LED power for each gated reading):
+**IR-gated sampling control** — on/off plus the LED power used for each gated
+reading (the IR LED only lights briefly per reading, never steady-on):
 ```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
-  -d '{"enabled": true, "led_power": 10}' https://<host>/api/od/sampling
+  -d '{"enabled": true, "led_power": 10}' $BASE/api/od/sampling
 ```
+Both fields optional, but at least one required (`400` otherwise). Counts as a
+manual override of a program's `od` track until its next step.
 
 ---
 
 ### Voltage sources
 
-Every configured source by name, with its kind, the OD measurements it feeds, the last
-IR-gated reading (`gated`) and an instantaneous un-gated reading taken now (`live`).
+Every configured source by name, with its kind, the OD measurements it feeds, the
+last IR-gated reading (`gated`) and an instantaneous un-gated reading taken now
+(`live`).
+
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/voltages
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/voltage/pd_135
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/voltages
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/voltage/pd_135
 ```
 Response (single): `{"status": "success", "name": "pd_135", "kind": "adc", "component": "optical_density", "od": ["OD_135"], "gated": 0.504, "live": 0.51, "unit": "volts"}`
-(`404` for an unknown name, `503` if the source's hardware component is down.)
 
-Deprecated aliases, kept for old scripts: `GET /api/optical_density/state` and
-`GET /api/eyespy_adc/state` return the un-gated voltages of the ADS1115 / eyespy sources as a
-positional list plus `names`.
+`404` for an unknown name, `503` if the source's hardware component is down.
+
+**Deprecated aliases**, kept for old scripts: `GET /api/optical_density/state`
+and `GET /api/eyespy_adc/state` return the un-gated voltages of the ADS1115 /
+eyespy sources as a positional list plus `names`. Prefer `/api/od/state` or
+`/api/voltages`.
 
 ---
 
-## Heater Control (schedule / PID)
+## Run control (schedule / PID / program)
 
-The control loop runs on the Pi with safety cutoffs (peltier off if the bath
-temperature reads NaN for 15 samples or leaves the 2–60 °C window). While a run
-is active, manual `POST /api/peltier_driver/control` returns `409`.
+One control loop on the Pi, at 1 Hz, in one of three modes. It runs **next to the
+hardware** so a dropped network link can never strand the heater — the safety
+supervision is local regardless of the tunnel or the droplet.
 
-**Upload + run a schedule** (CSV body, `duty,direction,hold_s`, same format as heater_gui):
+**Safety cutoffs** (all abort the run and cut peltier power):
+- bath temperature reads NaN for 15 consecutive samples
+- bath temperature leaves the **[2 °C, 60 °C]** window
+- free disk at the data directory falls below `DATA_MIN_FREE_MB`
+- 15 consecutive control-loop exceptions
+
+Only one run at a time — starting a second returns `409`. A run is refused with
+`507` if free disk is already below the floor after pruning.
+
+### Run a schedule (open loop)
+
+CSV body of `duty,direction,hold_s` rows — same format as `heater_gui` /
+`hardware_testing/peltier_schedule_example.csv`. `#` comments and a header row
+are allowed. Duty is capped per direction (heat ≤ `PELTIER_MAX_DUTY_HEAT`,
+cool ≤ `PELTIER_MAX_DUTY_COOL`).
+
 ```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: text/csv" \
   --data-binary $'duty,direction,hold_s\n50,cool,120\n0,heat,30\n70,heat,60\n' \
-  https://<host>/api/heater/schedule
+  $BASE/api/run/schedule
 ```
 
-**Run a PID setpoint:**
+### Run a PID setpoint
+
 ```bash
 curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
   -d '{"setpoint": 37.0, "kp": 12.0, "ki": 0.015, "kd": 0.0}' \
-  https://<host>/api/heater/pid
+  $BASE/api/run/pid
+```
+Gains default to `kp=12.0, ki=0.015, kd=0.0`. The integrator is cleared at the
+start of every run. Requires both `peltier_driver` and `temp_sensor`.
+
+### Run a multi-device program
+
+A JSON document of parallel per-device tracks (`ring` / `temp` / `heater` /
+`stirrer` / `pump` / `relay` / `od`), durations as bare seconds or `s`/`m`/`h`/`d`.
+See the module docstring in `program.py` for the full grammar.
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  --data-binary @program.json $BASE/api/run/program
 ```
 
-**Status of the current run:**
+Validate + get the expanded timeline without running anything (for a Gantt
+preview). Returns `200` with `{"valid": false, "error": "..."}` on a bad program
+so an editor can show it inline:
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/heater/status
+curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  --data-binary @program.json $BASE/api/run/program/preview
 ```
-Response: `{"active": true, "mode": "schedule", "step": 2, "total_steps": 3, "last": {"temperature": 24.2, "ambient_temp": 24.4, "peltier_current": -0.36, ...}, ...}`
 
-**Stop any active run (peltier off):**
+The uploaded program JSON is saved beside the run CSV (`*_program.json`) so a run
+is reproducible.
+
+### Status and stop
+
 ```bash
-curl -X POST -H "Authorization: Bearer $API_KEY" https://<host>/api/heater/stop
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/run/status
+
+curl -X POST -H "Authorization: Bearer $API_KEY" $BASE/api/run/stop
 ```
+Status: `{"active": true, "mode": "schedule", "completed": false, "aborted": false, "abort_reason": null, "data_file": "20260910_142530_peltier_schedule.csv", "elapsed_s": 184.0, "step": 2, "total_steps": 3, "step_remaining_s": 41.2, "last": {"temperature": 24.2, "ambient_temp": 24.4, "peltier_current": -0.36, "peltier_duty": 50.0, "direction": "heat"}}`
+
+Mode-specific extras: `schedule` adds `step` / `total_steps` / `current_step` /
+`remaining_steps` / `step_remaining_s`; `pid` adds `setpoint` / `gains`;
+`program` adds `program_name` / `setpoint` / `overrides` / `remaining_s` /
+`tracks[]`. `stop` is safe to call when idle and always leaves the peltier off.
 
 ---
 
-## Data Files
+## History
 
-**Download the most recent run CSV:**
-```bash
-curl -H "Authorization: Bearer $API_KEY" -OJ https://<host>/api/data/latest
-```
+A background sampler logs the monitor signals plus actuator/control state
+continuously — independent of runs — into a 24 h in-memory ring buffer backed by
+a 365-day append-only daily archive on the Pi (`history/YYYY-MM-DD.jsonl`).
 
-**List available data files (newest first):**
 ```bash
-curl -H "Authorization: Bearer $API_KEY" https://<host>/api/data/list
+# rolling window; ?since=<ms> for cheap incremental polling
+curl -H "Authorization: Bearer $API_KEY" "$BASE/api/history?since=1757500000000"
+
+# arbitrary range, read from the on-disk archive (downsampled server-side)
+curl -H "Authorization: Bearer $API_KEY" "$BASE/api/history/range?start=<ms>&end=<ms>"
 ```
+Both return `{"status": "success", "interval_s": 10, "od_measurements": {...}, "od_available": true, "points": [...]}` (`interval_s` = `HISTORY_INTERVAL_S`, default 10). `/api/history` also returns `archive_earliest_ms`.
 
 ---
 
-## Error Codes
+## Data files
+
+Run CSVs live under `bioreactor_v3/src/bioreactor_data/` and are listed
+recursively, newest first.
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/data/list
+curl -H "Authorization: Bearer $API_KEY" -OJ $BASE/api/data/latest
+```
+
+API-generated run files (`*_peltier_schedule.csv`, `*_pid_run.csv`,
+`*_program.csv`) are pruned oldest-first on startup and before each run to stay
+under `DATA_RETENTION_MAX_MB`, always keeping at least `DATA_RETENTION_KEEP` of
+the newest. Historical and committed data is never touched.
+
+---
+
+## Camera
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" -o snap.jpg \
+  "$BASE/api/camera/snapshot?rotation=180&zoom=1.5"
+```
+Optional query params override the configured defaults: `rotation` (0 or 180),
+`hflip`, `vflip`, `zoom` (≥ 1.0, centered digital zoom). Returns `image/jpeg`.
+`503` if the camera is disabled or unavailable.
+
+---
+
+## Error codes
 
 | Code | Meaning |
 |------|---------|
 | 200 | Success |
-| 400 | Malformed schedule / body |
-| 401 | Missing authorization header |
+| 400 | Malformed body — bad schedule/program CSV or JSON, empty OD sampling request, bad `rotation` |
+| 401 | Missing or malformed authorization header |
 | 403 | Invalid API key |
-| 404 | No data file found |
-| 409 | Manual control blocked (a heater run is active) / run already active |
-| 429 | Rate limit exceeded (100 req/min) |
-| 503 | Component not available |
+| 404 | No data file / unknown voltage source / unknown relay name |
+| 409 | Manual peltier control blocked (schedule or PID run active) · run already active · relay safety guard refused the command |
+| 422 | Body failed validation (out-of-range field, invalid relay command) |
+| 429 | Rate limit exceeded (default 100 req/min) |
+| 503 | Component not available (disabled in `INIT_COMPONENTS`, or failed to initialize) |
+| 507 | Not enough free disk to start a run |
+
+---
+
+## Interactive docs
+
+FastAPI serves a live, always-accurate schema — useful when this file and the
+code disagree:
+
+```
+$BASE/docs
+```
