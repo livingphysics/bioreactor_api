@@ -19,6 +19,13 @@ labels and a correct ppm-to-percent display in program previews.
 
 ## One-pulse identification
 
+The measurement tool requires relay status to expose `closed_seconds` computed
+after completed GPIO writes. `dose_s` records the difference in those counters;
+`requested_dose_s` records the command. Older APIs are rejected before dosing.
+A timing mismatch greater than max(20 ms, 10%) stops the measurement after saving
+the pulse row. These counters estimate electrical energized time, not mechanical
+valve opening. Independently verify short-pulse timing before calibrating flow.
+
 Set `API_KEY` in the environment and run (on the Pi, or supply `--url`):
 
 ```sh

@@ -427,6 +427,7 @@ async def lifespan(app: FastAPI):
         _relay_names = list(getattr(config, 'RELAYS', {}).keys())
         for _n in _relay_names:
             sim_state['relays'].setdefault(_n, False)
+        _relay_changed = None
         if simulation_mode:
             def _relay_set(name, energized):
                 sim_state['relays'][name] = bool(energized)
@@ -440,11 +441,10 @@ async def lifespan(app: FastAPI):
                 # GPIO writes do not use I2C; valve closure must not wait for that bus.
                 if not (relay_on if energized else relay_off)(bioreactor, name):
                     raise RuntimeError(f"Relay {name} write failed")
-                # Mirror the controller's cumulative closed-time onto the bioreactor so the
-                # run CSV's relay_<name>_closed_s captures even sub-second doses. The
-                # controller updates its counter before calling this, so it's current here.
+            def _relay_changed(totals):
+                # Mirror only after successful GPIO writes and time accounting.
                 if bioreactor is not None and hasattr(bioreactor, 'relay_closed_times'):
-                    bioreactor.relay_closed_times.update(relay_controller.closed_seconds())
+                    bioreactor.relay_closed_times.update(totals)
             def _relay_get():
                 with HARDWARE_LOCK:
                     return get_all_relay_states(bioreactor)
@@ -452,6 +452,7 @@ async def lifespan(app: FastAPI):
             set_fn=_relay_set, get_fn=_relay_get, names=_relay_names,
             guards=getattr(config, 'RELAY_SAFETY', {}),
             co2_fn=lambda: gas_sampler.latest().get('co2'),   # for the CO2-gated dose guard
+            on_change=_relay_changed,
         )
         # Add relay columns to the run CSV: measure_and_record_sensors already writes
         # each relay's state into the row, but only if the name is in bioreactor.fieldnames.

@@ -12,6 +12,20 @@ import time
 import urllib.request
 
 
+def finish_pulse(request, before, timeout_s=5):
+    """Wait for a confirmed OFF and return completed GPIO-write time accounting."""
+    deadline = time.monotonic()+timeout_s
+    while time.monotonic() < deadline:
+        state = request('/api/relays/state')
+        if state['states']['CO2'] == 'open' and not state.get('pending', {}).get('CO2'):
+            duration = state['closed_seconds']['CO2']-before
+            if not math.isfinite(duration) or duration <= 0:
+                raise RuntimeError('Missing or invalid completed pulse duration')
+            return duration
+        time.sleep(0.05)
+    raise RuntimeError('CO2 pulse did not confirm OFF before timeout')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--url', default='http://127.0.0.1:9000')
@@ -39,11 +53,13 @@ def main():
         raise RuntimeError('Pulse exceeds or lacks API timed-dose guard')
     if relay['states']['CO2'] != 'open' or relay.get('pending', {}).get('CO2'):
         raise RuntimeError('CO2 valve is already active')
+    if 'CO2' not in relay.get('closed_seconds', {}):
+        raise RuntimeError('API lacks completed-write timing: update API before calibration')
     t0 = time.monotonic()
     fired = False
     valid_baseline = 0
     with open(a.output, 'x', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['t_s', 'co2_ppm', 'dose_s'])
+        writer = csv.DictWriter(f, fieldnames=['t_s', 'co2_ppm', 'dose_s', 'requested_dose_s'])
         writer.writeheader()
         try:
             while time.monotonic() - t0 <= a.baseline + a.observe:
@@ -52,20 +68,29 @@ def main():
                 if value is None or not math.isfinite(value) or value < 0 or value >= a.limit:
                     raise RuntimeError(f'Missing/invalid CO2 or limit reached: {value}')
                 dose = 0
+                requested = 0
                 if tick - t0 < a.baseline:
                     valid_baseline += 1
                 elif not fired:
                     if valid_baseline < 6:
                         raise RuntimeError('Not enough baseline readings')
+                    relay = request('/api/relays/state')
+                    if relay['states']['CO2'] != 'open' or relay.get('pending', {}).get('CO2'):
+                        raise RuntimeError('CO2 valve became active during baseline')
+                    before = relay['closed_seconds']['CO2']
                     # Never retry an uncertain POST: it may already have actuated.
                     fired = True
+                    requested = a.pulse
                     request('/api/relays/timed', {'relay_name': 'CO2',
                             'command': 'closed', 'duration': a.pulse})
-                    dose = a.pulse
-                row = {'t_s': round(tick-t0, 3), 'co2_ppm': value, 'dose_s': dose}
+                    dose = finish_pulse(request, before)
+                row = {'t_s': round(tick-t0, 3), 'co2_ppm': value, 'dose_s': dose,
+                       'requested_dose_s': requested}
                 writer.writerow(row)
                 f.flush()
                 print(json.dumps(row), flush=True)
+                if requested and abs(dose-requested) > max(0.02, requested*0.1):
+                    raise RuntimeError(f'Pulse timing mismatch: requested {requested}s, accounted {dose}s')
                 time.sleep(max(0, 5 - (time.monotonic() - tick)))
         finally:
             if fired:
