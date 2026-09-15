@@ -37,6 +37,7 @@ class GasSampler:
 
         self._latest = {}                  # {'co2': int|None, 'o2': float|None}
         self._latest_t = 0                 # ms
+        self._acquired = {}                # per-sensor monotonic acquisition times
 
     # ------------------------------------------------------------------ setup
     def configure(self, *, hw_lock, sensors, sim, period_s=5.0):
@@ -46,6 +47,7 @@ class GasSampler:
             self._sim = sim
             self._period = max(1.0, float(period_s))
             self._latest = {s['name']: None for s in self._sensors}
+            self._acquired = {}
 
     @property
     def has_sensors(self) -> bool:
@@ -70,6 +72,11 @@ class GasSampler:
         with self._lock:
             return dict(self._latest)
 
+    def sample(self, name):
+        """Value + monotonic timestamp of this sensor's last acquisition attempt."""
+        with self._lock:
+            return self._latest.get(name), self._acquired.get(name, 0.0)
+
     def status(self):
         with self._lock:
             return {"period_s": self._period, "sensors": [s['name'] for s in self._sensors]}
@@ -88,6 +95,7 @@ class GasSampler:
                     val = None
                 with self._lock:
                     self._latest[s['name']] = val
+                    self._acquired[s['name']] = time.monotonic()
                     self._latest_t = int(time.time() * 1000)
             self._stop.wait(max(0.0, self._period - (time.time() - t0)))
 

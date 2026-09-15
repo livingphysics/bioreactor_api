@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
+co2_controller = None
 bioreactor = None  # Bioreactor instance (None in simulation mode)
 simulation_mode = True
 initialized_components: Dict[str, bool] = {}
@@ -257,6 +258,9 @@ async def lifespan(app: FastAPI):
                 pump_apply_fn=lambda interval, duty, rate=None: pump_controller.set_regime(interval, duty, rate),
                 pump_stop_fn=pump_controller.off,
                 relay_apply_fn=_program_apply_relay,
+                co2_apply_fn=lambda target: co2_controller.program(target),
+                co2_stop_fn=lambda: co2_controller.stop(owner="program") if co2_controller else None,
+                co2_status_fn=lambda: co2_controller.status() if co2_controller else {},
                 od_apply_fn=lambda power, enabled: od_sampler.set_config(led_power=power, enabled=enabled),
             )
             runner.prune()  # trim old run files on startup
@@ -290,6 +294,9 @@ async def lifespan(app: FastAPI):
             pump_apply_fn=lambda interval, duty, rate=None: pump_controller.set_regime(interval, duty, rate),
             pump_stop_fn=pump_controller.off,
             relay_apply_fn=_program_apply_relay,
+            co2_apply_fn=lambda target: co2_controller.program(target),
+            co2_stop_fn=lambda: co2_controller.stop(owner="program") if co2_controller else None,
+            co2_status_fn=lambda: co2_controller.status() if co2_controller else {},
             od_apply_fn=lambda power, enabled: od_sampler.set_config(led_power=power, enabled=enabled),
         )
 
@@ -430,8 +437,9 @@ async def lifespan(app: FastAPI):
             if bioreactor is not None and not hasattr(bioreactor, 'relay_closed_times'):
                 bioreactor.relay_closed_times = {n: 0.0 for n in _relay_names}
             def _relay_set(name, energized):
-                with HARDWARE_LOCK:
-                    (relay_on if energized else relay_off)(bioreactor, name)
+                # GPIO writes do not use I2C; valve closure must not wait for that bus.
+                if not (relay_on if energized else relay_off)(bioreactor, name):
+                    raise RuntimeError(f"Relay {name} write failed")
                 # Mirror the controller's cumulative closed-time onto the bioreactor so the
                 # run CSV's relay_<name>_closed_s captures even sub-second doses. The
                 # controller updates its counter before calling this, so it's current here.
@@ -453,6 +461,10 @@ async def lifespan(app: FastAPI):
                     if _col not in bioreactor.fieldnames:
                         bioreactor.fieldnames.append(_col)
 
+    global co2_controller
+    from co2_controller import CO2API
+    co2_controller = CO2API(config, gas_sampler, relay_controller, initialized_components)
+
     # Rolling sensor-history buffer (samples continuously, independent of runs).
     if getattr(config, 'HISTORY_ENABLED', True):
         history.configure(
@@ -467,6 +479,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    co2_controller.stop()
     gas_sampler.stop()
     od_sampler.stop()
     pump_controller.stop()
@@ -584,6 +597,7 @@ async def state(request: Request):
         "peltier_current": current,
         "peltier": peltier,
         "run": runner.status(),
+        "co2_control": co2_controller.status() if co2_controller else None,
         "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
         "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
         "od": _read_od(),
@@ -839,9 +853,11 @@ async def relays_control(request: Request, req: RelayControlRequest):
     """Set a relay: command is open | closed | toggle."""
     require_component('relays')
     try:
-        relay_controller.apply(req.relay_name, req.command)
+        co2_controller.manual(req.relay_name, req.command)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"no relay named '{req.relay_name}'")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except RelaySafetyError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -856,9 +872,11 @@ async def relays_timed(request: Request, req: RelayTimedRequest):
     """command-wait-toggle: run `command` now, then toggle the relay after `duration` s."""
     require_component('relays')
     try:
-        relay_controller.timed(req.relay_name, req.command, req.duration)
+        co2_controller.manual(req.relay_name, req.command, req.duration)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"no relay named '{req.relay_name}'")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except RelaySafetyError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -1037,6 +1055,17 @@ async def run_program(request: Request):
         prog = parse_program(raw.decode('utf-8'), limits=limits)
     except (UnicodeDecodeError, ProgramError) as e:
         raise HTTPException(status_code=400, detail=f"invalid program: {e}")
+    try:
+        for tr in prog.tracks:
+            for step in tr.steps:
+                if step.command == 'co2' and step.value is not False:
+                    co2_controller.validate(step.value)
+        if co2_controller.status()['active'] and any(tr.device == 'relay:CO2' for tr in prog.tracks):
+            raise RuntimeError('CO2 control is already active')
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     # temp steps need a temp sensor for the PID
     if not simulation_mode and any(
             s.command == 'temp' for tr in prog.tracks for s in tr.steps):
@@ -1071,6 +1100,7 @@ async def run_program_preview(request: Request):
 @limiter.limit(RATE_LIMIT)
 async def run_stop(request: Request):
     """Stop any active schedule/PID run and turn the peltier off."""
+    co2_controller.stop()
     status = runner.stop(reason="stopped via API")
     return {"status": "success", **status}
 
@@ -1278,6 +1308,8 @@ def _actuator_signals():
         "stirrer": stir['duty'] if stir else None,
         "ir_power": od_sampler.led_power if initialized_components.get('led') else None,
         "setpoint": runner.status().get('setpoint'),   # None unless a PID/program targets a temp
+        "co2_target_ppm": (co2_controller.status().get('target_ppm')
+                           if co2_controller and co2_controller.status().get('active') else None),
         "pump_duty": None,
         "pump_time_s": None,
         "relays": None,
@@ -1499,7 +1531,7 @@ def _program_apply_relay(name, state):
     """Apply a program track's relay command. A safety-guarded relay's dose may be
     refused (rate limit / CO2) — log and carry on rather than crash the control tick."""
     try:
-        relay_controller.apply(name, state)
+        co2_controller.manual(name, state)
     except RelaySafetyError as e:
         logger.warning("program relay %s -> %s blocked: %s", name, state, e)
 
@@ -1508,3 +1540,37 @@ def _get_config():
     """Lazy-load config for simulation mode sensor defaults."""
     from config import Config
     return Config()
+
+
+class CO2StartRequest(BaseModel):
+    target_ppm: float = Field(gt=0, lt=95000, allow_inf_nan=False, strict=True)
+    duration_s: float = Field(default=3600, gt=0, le=604800, allow_inf_nan=False, strict=True)
+
+
+@app.post("/api/co2/control")
+@limiter.limit(RATE_LIMIT)
+async def start_co2_control(request: Request, req: CO2StartRequest):
+    try:
+        if runner.active and runner.mode == 'program' and any(
+                tr.device == 'relay:CO2' for tr in runner.program.tracks):
+            raise RuntimeError('An active program owns the CO2 valve')
+        co2_controller.start(req.target_ppm, duration_s=req.duration_s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "success", **co2_controller.status()}
+
+
+@app.post("/api/co2/stop")
+@limiter.limit(RATE_LIMIT)
+async def stop_co2_control(request: Request):
+    co2_controller.stop()
+    runner.note_override('relay:CO2')
+    return {"status": "success", **co2_controller.status()}
+
+
+@app.get("/api/co2/controller")
+@limiter.limit(RATE_LIMIT)
+async def co2_control_state(request: Request):
+    return co2_controller.status()

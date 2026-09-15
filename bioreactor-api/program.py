@@ -24,6 +24,7 @@ Commands (one per step; the key names the device):
     pump: {duty:<%>, interval:<dur>} -> timed media-exchange dosing (device 'pump')
     relay: {name:<relay>, state:open|closed} -> relay state (device 'relay:<name>')
     od: {power:<%>, enabled?:bool} -> OD IR-LED sampling power/enable (device 'od')
+    co2: <ppm> | false -> CO2 MPC target / stop (device 'relay:CO2')
 
 Durations: bare number = seconds; suffix s/m/h/d ("90", "10m", "12h", "10d").
 Omitting "for" (or <=0) on the LAST step of a non-repeating track = hold until the
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import re
 import json
+import math
 from typing import Any, Dict, List, Optional
 
 
@@ -52,6 +54,7 @@ _COMMAND_DEVICE = {
     'pump': 'pump',
     'relay': 'relay',   # per-relay device is 'relay:<name>' (resolved in _parse_command)
     'od': 'od',
+    'co2': 'relay:CO2',  # excludes a competing manual CO2 relay track
 }
 _COMMANDS = tuple(_COMMAND_DEVICE)
 
@@ -130,6 +133,14 @@ def _parse_command(obj: dict, limits: dict):
     cmd = cmds[0]
     device = _COMMAND_DEVICE[cmd]
     raw = obj[cmd]
+
+    if cmd == 'co2':
+        if raw is False:
+            return device, cmd, False
+        val = _num(raw, 'co2 target (ppm)')
+        if not math.isfinite(val) or not 0 < val < 95000:
+            raise ProgramError('co2 target must be finite, positive and below 95000 ppm')
+        return device, cmd, val
 
     if cmd == 'ring':
         if not isinstance(raw, (list, tuple)) or len(raw) != 3:
