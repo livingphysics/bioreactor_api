@@ -74,6 +74,12 @@ class ProgramTests(unittest.TestCase):
         c.start_program(parse_program(program()));c.program_end=time.time()-1;c._tick()
         apply.assert_not_called();stop.assert_called();self.assertFalse(c.active)
 
+    def test_controller_fault_aborts_program(self):
+        stop=Mock();c=self.runner(Mock(),stop)
+        c._co2_status_fn=lambda:{'owner':'program','fault':'CO2 sample stale'}
+        c.start_program(parse_program(program()));c._tick()
+        self.assertTrue(c.aborted);self.assertIn('stale',c.abort_reason);stop.assert_called()
+
     def test_freshness_is_per_sensor(self):
         g=GasSampler();g._latest={'co2':1000,'o2':20};g._acquired={'co2':10,'o2':50}
         self.assertEqual(g.sample('co2'),(1000,10))
