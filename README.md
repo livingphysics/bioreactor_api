@@ -37,6 +37,14 @@ pip install -r bioreactor_v3/requirements.txt    # drivers: numpy, adafruit-*, l
 **For `HARDWARE_MODE=real` you need both files** — the API layer imports the
 drivers, which pull in numpy and the hardware libraries.
 
+**Senseair K33:** the template uses `CO2_SENSOR_I2C_BUS = 3`, a dedicated bus
+on GPIO23/24. Follow the [K33 wiring and boot setup](bioreactor-api/bioreactor_v3/docs/senseair_k33.md)
+before starting the API. The sensor uses separate main power, common ground,
+and 3.3 V I²C signals; leave its DVCC output disconnected from Pi 3.3 V.
+Atlas CO₂ rigs should set the type/address for Atlas and use bus 1.
+Existing `config.py` files are not updated by pulling code: change the K33 bus
+explicitly, and keep the submodule symlink pointing to that same config.
+
 **For simulation you only need `requirements.txt`.** Every API module imports
 nothing but the standard library, the drivers are never imported, and the one
 piece of `bioreactor_v3` that is used (`src/optics.py`, pure stdlib) is loaded by

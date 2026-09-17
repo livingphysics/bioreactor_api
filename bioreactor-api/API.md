@@ -192,7 +192,7 @@ CO₂ ceiling); a command the guard refuses returns `409`. An unknown relay name
 | `GET /api/temp_sensor/state` | `temperature` (°C) |
 | `GET /api/ambient_temp/state` | `temperature` (°C) |
 | `GET /api/peltier_current/state` | `current` (A, unsigned — `/api/state` signs it) |
-| `GET /api/co2_sensor/state` | `co2_ppm` (from the background gas sampler cache) |
+| `GET /api/co2_sensor/state` | `co2_ppm`, `acquired_at` (Unix seconds), `sample_age_s` (from the background gas sampler cache; timestamps null before acquisition) |
 | `GET /api/o2_sensor/state` | `o2_percent` (from the background gas sampler cache) |
 
 ```bash
@@ -397,3 +397,25 @@ code disagree:
 ```
 $BASE/docs
 ```
+
+
+### CO₂ feedback controller
+
+- `POST /api/co2/control`: `{"target_percent": 2, "duration_s": 3600}` starts or
+  updates the on-Pi MPC. Use exactly one of `target_percent` or legacy `target_ppm`.
+  Percent means percent by volume: **2 = 20,000 ppm**. Numeric finite values only;
+  target must be positive and below 9.5%, subject to stricter rig limits. Duration
+  defaults to one hour and must be positive (at most seven days, or the lower
+  configured trial maximum). Trial updates never extend the existing deadline.
+- `POST /api/co2/stop`: immediate stop and valve OFF; releases/suspends a program's
+  CO₂ track until its next step, without stopping other devices.
+- `GET /api/co2/controller`: `active`, `owner`, `fault`, `target_ppm`, `target_percent`,
+  `remaining_s`, `restart_wait_s`, measurement recovery, uncertainty and forecasts.
+  `limits` gives `trial_target_max_percent` (inclusive when present),
+  `target_below_percent` (exclusive) and `max_duration_s`.
+- Program step: `{"co2": {"percent": 2}}`; legacy `{"co2": 20000}` remains ppm.
+  `{"co2": false}` stops control. Provisional profiles require finite program duration.
+
+Invalid request shapes return 422; invalid profile targets/durations return 400;
+competing valve ownership or restart settling return 409. Authentication and relay
+safety guards apply. See [CO₂ setup and examples](../docs/co2_mpc.md).

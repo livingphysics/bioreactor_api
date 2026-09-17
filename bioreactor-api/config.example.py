@@ -57,6 +57,12 @@ class Config:
     Only include settings that differ from defaults.
     """
 
+    # CO2 MPC is opt-in. Supply a validated, rig-specific model after response tests.
+    # See docs/co2_mpc.md in bioreactor_v3; no controller starts automatically.
+    # Optional profile["uncertainty"] enables scenario planning and bounded gain learning.
+    # Omit it for legacy planning; see the commissioning example in the same docs.
+    CO2_MPC = None
+
     # ========================================================================
     # Component Initialization Control
     # ========================================================================
@@ -197,7 +203,10 @@ class Config:
     # it won't show up in a default `i2cdetect -y -r 1` scan even when healthy.
     CO2_SENSOR_TYPE: str = 'sensair_k33'
     CO2_SENSOR_I2C_ADDRESS: Optional[int] = 0x68   # verified on the bus 2026-08-27
-    CO2_SENSOR_I2C_BUS: int = 1
+    # Dedicated K33 bus: SDA GPIO23 (pin 16), SCL GPIO24 (pin 18).
+    # Requires the i2c-gpio boot overlay; see bioreactor_v3/docs/senseair_k33.md.
+    # Atlas CO2 rigs should use bus 1 instead.
+    CO2_SENSOR_I2C_BUS: int = 3
 
     # O2 Sensor (Atlas Scientific EZO-O2, reads %)
     O2_SENSOR_I2C_ADDRESS: Optional[int] = 0x6C    # verified on the bus

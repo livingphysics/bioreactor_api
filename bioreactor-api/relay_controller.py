@@ -9,8 +9,8 @@ work). Maps the API's open/closed/toggle commands to the driver's energized bool
 
 and manages the timed "command-wait-toggle" action: run a command now, then toggle
 the relay after a delay (a one-shot timed pulse). Hardware access is delegated to
-injected set/get fns (serialized on HARDWARE_LOCK in real mode), so this module runs
-unchanged in simulation.
+injected set/get fns, so this module runs unchanged in simulation. GPIO writes
+must not wait for the I2C hardware lock.
 """
 import time
 import logging
@@ -29,6 +29,8 @@ class RelayController:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._state_lock = threading.RLock()
+        self._on_change = None
         self._set_fn = None        # set_fn(name, energized: bool)
         self._get_fn = None        # get_fn() -> {name: energized bool}
         self._names = []
@@ -37,14 +39,15 @@ class RelayController:
         self._co2_fn = None        # () -> current CO2 ppm (or None)
         self._last_dose = {}       # name -> epoch of last dose
         self._closed_total = {}    # name -> cumulative energized (closed) seconds
-        self._closed_since = {}    # name -> epoch it last closed (if currently closed)
+        self._closed_since = {}    # name -> monotonic time of successful ON write
 
-    def configure(self, *, set_fn, get_fn, names, guards=None, co2_fn=None):
+    def configure(self, *, set_fn, get_fn, names, guards=None, co2_fn=None, on_change=None):
         self._set_fn = set_fn
         self._get_fn = get_fn
         self._names = list(names)
         self._guards = {k: v for k, v in (guards or {}).items() if k in self._names}
         self._co2_fn = co2_fn
+        self._on_change = on_change
 
     # ----------------------------------------------------------------- helpers
     def _energized(self, name) -> bool:
@@ -60,25 +63,31 @@ class RelayController:
         """Drive the relay AND accumulate cumulative closed (energized) time, so brief
         doses — which can start and end entirely between CSV/history samples — are still
         captured. Every relay state change routes through here."""
-        now = time.time()
-        since = self._closed_since.get(name)
-        if energized and since is None:
-            self._closed_since[name] = now
-        elif not energized and since is not None:
-            self._closed_total[name] = self._closed_total.get(name, 0.0) + (now - since)
-            self._closed_since[name] = None
-        self._set_fn(name, energized)
+        with self._state_lock:
+            # Timestamp completed writes, not requests: a delayed OFF must count
+            # as energized time, and a failed OFF must leave the interval open.
+            self._set_fn(name, energized)
+            now = time.monotonic()
+            since = self._closed_since.get(name)
+            if energized and since is None:
+                self._closed_since[name] = now
+            elif not energized and since is not None:
+                self._closed_total[name] = self._closed_total.get(name, 0.0) + (now - since)
+                self._closed_since[name] = None
+            if self._on_change:
+                self._on_change(self.closed_seconds())
 
     def closed_seconds(self) -> dict:
         """Cumulative closed (energized) seconds per relay, including any in-progress
         close. Monotonic per process — diff successive samples for per-interval dose time."""
-        now = time.time()
-        out = {}
-        for name in self._names:
-            total = self._closed_total.get(name, 0.0)
-            since = self._closed_since.get(name)
-            out[name] = round(total + (now - since if since is not None else 0.0), 3)
-        return out
+        with self._state_lock:
+            now = time.monotonic()
+            out = {}
+            for name in self._names:
+                total = self._closed_total.get(name, 0.0)
+                since = self._closed_since.get(name)
+                out[name] = round(total + (now - since if since is not None else 0.0), 3)
+            return out
 
     # --------------------------------------------------------------------- API
     def _target(self, name, command) -> bool:
@@ -177,7 +186,8 @@ class RelayController:
         now = time.time()
         with self._lock:
             pending = {n: round(max(0.0, fire_at - now), 1) for n, (_, fire_at) in self._timers.items()}
-        out = {'states': self.states(), 'pending': pending}
+        out = {'states': self.states(), 'pending': pending,
+               'closed_seconds': self.closed_seconds()}
         if self._guards:
             out['guards'] = {}
             for n, g in self._guards.items():

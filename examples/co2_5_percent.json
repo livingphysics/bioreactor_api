@@ -1,0 +1,16 @@
+{
+  "name": "CO2 at 5 percent",
+  "duration": "1h",
+  "tracks": [
+    {
+      "name": "CO2",
+      "steps": [
+        {
+          "co2": {
+            "percent": 5
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -204,6 +204,9 @@ class RunController:
         self._pump_stop_fn = None        # callable() -> stop pump dosing
         self._relay_apply_fn = None      # callable(name, 'open'|'closed') -> set a relay
         self._od_apply_fn = None         # callable(power, enabled) -> set OD sampler config
+        self._co2_apply_fn = None
+        self._co2_stop_fn = None
+        self._co2_status_fn = None
 
         self._reset_state()
 
@@ -214,7 +217,7 @@ class RunController:
                   od_power_fn=None, od_latest_fn=None, gas_latest_fn=None,
                   ring_apply_fn=None, stirrer_apply_fn=None,
                   pump_apply_fn=None, pump_stop_fn=None, relay_apply_fn=None,
-                  od_apply_fn=None):
+                  od_apply_fn=None, co2_apply_fn=None, co2_stop_fn=None, co2_status_fn=None):
         with self._lock:
             self._bio = bio
             self._sim = sim
@@ -237,6 +240,9 @@ class RunController:
             self._pump_stop_fn = pump_stop_fn
             self._relay_apply_fn = relay_apply_fn
             self._od_apply_fn = od_apply_fn
+            self._co2_apply_fn = co2_apply_fn
+            self._co2_stop_fn = co2_stop_fn
+            self._co2_status_fn = co2_status_fn
 
     def prune(self):
         """Prune old run files now (e.g. on startup). No-op in simulation."""
@@ -416,6 +422,7 @@ class RunController:
             if thread and thread.is_alive() and threading.current_thread() is not thread:
                 thread.join(timeout=3.0)
             self._all_off()
+            self._stop_program_co2()
             if self.mode == 'program' and self._pump_stop_fn:
                 try:
                     self._pump_stop_fn()   # a program owns the pumps; stopping it stops dosing
@@ -498,6 +505,7 @@ class RunController:
                 # wedged bus can't hold the heater on while the loop retries.
                 logger.error("Run control tick error: %s", e, exc_info=True)
                 self._all_off()
+                self._stop_program_co2()
                 self.tick_errors += 1
                 if self.tick_errors >= MAX_NAN_SAMPLES:
                     with self._lock:
@@ -533,10 +541,20 @@ class RunController:
     # -------------------------------------------------------------- program mode
     def _program_tick(self):
         now = time.time()
+        if self.program_end is not None and now >= self.program_end:
+            self._finish(completed=True)
+            return
         # 1. advance every track; apply commands at step boundaries (ring/stirrer/heater
         #    are set once here; temp just sets self.setpoint for the per-tick PID below)
         for i in range(len(self._track_state)):
             self._advance_track(i, now)
+            if not self.active:
+                return
+        if self._co2_status_fn and any(tr.device == 'relay:CO2' for tr in self.program.tracks):
+            co2 = self._co2_status_fn()
+            if co2.get('owner') == 'program' and co2.get('fault'):
+                self._finish(completed=False, abort='CO2 controller: '+co2['fault'])
+                return
         # 2. whole-program end (duration reached, or every track exhausted)
         if self._program_finished(now):
             self._finish(completed=True)
@@ -618,6 +636,20 @@ class RunController:
             v = step.value                        # {'power': 0-100, 'enabled'?: bool}
             if self._od_apply_fn:
                 self._od_apply_fn(v['power'], v.get('enabled'))
+        elif step.command == 'co2':
+            if not self._co2_apply_fn:
+                raise RuntimeError('CO2 controller is unavailable')
+            try:
+                remaining = max(0.0, self.program_end-time.time()) if self.program_end is not None else None
+                if step.value is not False and remaining is not None and remaining <= 0:
+                    return
+                self._co2_apply_fn(step.value, duration_s=remaining)
+            except (ValueError, RuntimeError) as e:
+                self._finish(completed=False, abort=f'CO2 control could not start: {e}')
+
+    def _stop_program_co2(self):
+        if self.mode == 'program' and self._co2_stop_fn:
+            self._co2_stop_fn()
 
     def _end_track_device(self, device: str):
         # A non-repeating track ran out of steps: release the device. The peltier is
@@ -627,6 +659,8 @@ class RunController:
             self._all_off()
         elif device == 'pump' and self._pump_stop_fn:
             self._pump_stop_fn()
+        elif device == 'relay:CO2':
+            self._stop_program_co2()
 
     def _program_finished(self, now: float) -> bool:
         if self.program_end is not None:
@@ -720,6 +754,7 @@ class RunController:
             logger.warning("Run aborted: %s", abort)
         self._stop_evt.set()
         self._all_off()
+        self._stop_program_co2()
         if self.mode == 'program' and self._pump_stop_fn:
             try:
                 self._pump_stop_fn()
