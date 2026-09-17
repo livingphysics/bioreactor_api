@@ -1549,7 +1549,7 @@ class CO2StartRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target_ppm: Optional[float] = Field(default=None, gt=0, lt=95000, allow_inf_nan=False, strict=True)
     target_percent: Optional[float] = Field(default=None, gt=0, lt=9.5, allow_inf_nan=False, strict=True)
-    duration_s: float = Field(default=3600, gt=0, le=604800, allow_inf_nan=False, strict=True)
+    duration_s: float = Field(default=3600, ge=0, le=604800, allow_inf_nan=False, strict=True)
 
     @model_validator(mode='after')
     def exactly_one_target(self):

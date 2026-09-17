@@ -61,6 +61,8 @@ class Config:
     # See docs/co2_mpc.md in bioreactor_v3; no controller starts automatically.
     # Optional profile["uncertainty"] enables scenario planning and bounded gain learning.
     # Omit it for legacy planning; see the commissioning example in the same docs.
+    # Optional provisional profile setting: trial.allow_indefinite=True permits
+    # duration 0 (until stopped), retaining all concentration/pulse/sensor limits.
     CO2_MPC = None
 
     # ========================================================================

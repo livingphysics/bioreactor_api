@@ -3,7 +3,6 @@ import json
 import logging
 import time
 from bioreactor_v3.src.co2_control import CO2Control
-from bioreactor_v3.src.co2_mpc import finite
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +32,7 @@ class CO2API:
         if 'CO2' not in self.relays._names:
             raise ValueError('config.RELAYS must contain CO2')
         model, settings = self.worker.validate(target)
-        if duration_s is not None:
-            finite(duration_s, 'duration', strict=True)
-        if self.worker.profile.get('validated') is not True:
-            maximum = self.worker.profile['trial']['max_duration_s']
-            if duration_s is None or duration_s > maximum:
-                raise ValueError('CO2 trial requires a finite duration within its configured maximum')
+        self.worker.validate_duration(duration_s)
         if not self.guard or self.guard.get('co2_max_ppm') is None:
             raise ValueError('CO2 RELAY_SAFETY guard is required')
         if settings.max_ppm > min(95000, self.guard['co2_max_ppm']):
@@ -90,6 +84,7 @@ class CO2API:
             limits={
                 'trial_target_max_percent': trial.get('target_max_ppm', 0) / 10000 if trial else None,
                 'max_duration_s': min(604800, trial.get('max_duration_s', 604800)),
+                'allow_indefinite': status['configured'] and self.worker.allows_indefinite(),
                 'target_below_percent': (settings.get('max_ppm', 95000) - settings.get('margin_ppm', 5000)) / 10000,
             },
         )

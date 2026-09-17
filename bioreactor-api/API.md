@@ -406,7 +406,8 @@ $BASE/docs
   Percent means percent by volume: **2 = 20,000 ppm**. Numeric finite values only;
   target must be positive and below 9.5%, subject to stricter rig limits. Duration
   defaults to one hour and must be positive (at most seven days, or the lower
-  configured trial maximum). Trial updates never extend the existing deadline.
+  configured trial maximum). Positive-duration trial updates never extend a timed deadline; an explicitly
+  permitted zero-duration update removes it.
 - `POST /api/co2/stop`: immediate stop and valve OFF; releases/suspends a program's
   CO₂ track until its next step, without stopping other devices.
 - `GET /api/co2/controller`: `active`, `owner`, `fault`, `target_ppm`, `target_percent`,
@@ -414,8 +415,15 @@ $BASE/docs
   `limits` gives `trial_target_max_percent` (inclusive when present),
   `target_below_percent` (exclusive) and `max_duration_s`.
 - Program step: `{"co2": {"percent": 2}}`; legacy `{"co2": 20000}` remains ppm.
-  `{"co2": false}` stops control. Provisional profiles require finite program duration.
+  `{"co2": false}` stops control. Provisional profiles require finite program duration unless
+  `trial.allow_indefinite` is explicitly enabled.
 
 Invalid request shapes return 422; invalid profile targets/durations return 400;
 competing valve ownership or restart settling return 409. Authentication and relay
 safety guards apply. See [CO₂ setup and examples](../docs/co2_mpc.md).
+
+CO₂ control accepts `duration_s: 0` for indefinite operation, for example
+`{"target_percent": 2, "duration_s": 0}`. Check `limits.allow_indefinite` in controller
+status: validated profiles permit this; provisional profiles require the explicit
+`CO2_MPC['trial']['allow_indefinite'] = True` setting. Active indefinite runs report
+`indefinite: true` and `remaining_s: null`. Stop and fault behavior are unchanged.

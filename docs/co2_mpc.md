@@ -22,8 +22,9 @@ the on-Pi controller.
 
 The panel reads the current rig's limits; it does not assume all rigs are calibrated.
 On bioreactor01 the tested provisional profile permits setpoints up to **2%** and
-runs up to **240 minutes**. Updating a bounded trial cannot extend its original
-deadline. The existing minimum pulse, measurement recovery, ownership and restart
+timed runs up to **240 minutes**. With `trial.allow_indefinite: true`, enter
+**0** minutes to run until stopped. Positive-duration updates cannot extend a
+timed trial's deadline; an explicitly permitted zero-duration update removes it. The existing minimum pulse, measurement recovery, ownership and restart
 settling guards remain active. The commissioning script's separate 27,500 ppm
 supervisor is not launched by the UI; direct/program control uses the shared
 worker's configured 30,000 ppm cutoff and 29,500 ppm planning budget. Keep the
@@ -37,7 +38,8 @@ POST this JSON to `/api/co2/control` on the authenticated Pi API or dashboard pr
 
 `target_percent` must be finite, positive and below 9.5, and also satisfy the
 rig's stricter configured limits. Supply exactly one of `target_percent` or the
-backwards-compatible `target_ppm`. Duration defaults to 3,600 seconds. Unknown
+backwards-compatible `target_ppm`. Duration defaults to 3,600 seconds; **0 means indefinite** when the profile permits
+it. For example, `{"target_percent": 2, "duration_s": 0}`. Unknown
 fields, both targets, strings and booleans are rejected. `POST /api/co2/stop`
 stops control; `GET /api/co2/controller` and `/api/state.co2_control` expose its
 status, percent target and configured limits.
@@ -56,7 +58,8 @@ For the Program panel or `POST /api/run/program`, use
 `{"co2": false}` stops a program's CO₂ controller. Existing numeric
 `{"co2": 20000}` remains ppm and behaves identically. Percent objects normalize
 to ppm in program previews and the shared worker. Bounded profiles require a
-finite program duration within the configured maximum; each CO₂ step receives
+finite program duration within the configured maximum unless indefinite operation
+is explicitly enabled; each CO₂ step receives
 only the time remaining to the original program deadline. Program completion,
 stop or abort stops its CO₂ worker. Use `/api/run/program/preview` to check JSON
 without actuating hardware. The 5% example requires a separately permitted profile;
@@ -65,9 +68,10 @@ it is not enabled by the current bioreactor01 calibration.
 For an explicitly supervised commissioning trial, a provisional profile may keep
 `validated: false` and specify `"trial": {"enabled": true, "target_max_ppm": 10000,
 "max_duration_s": 7200}`. Use the direct control endpoint with a bounded duration;
-finite program durations are supported and indefinite program starts are refused in this mode. Existing concentration,
-freshness, pulse and restart-settling guards still apply. Repeated requests cannot
-extend the current trial deadline. Status reports `trial_mode`, `model_validated`,
+finite program durations are supported. Indefinite starts require the explicit
+`trial.allow_indefinite: true` option (validated profiles already permit them). Existing concentration,
+freshness, pulse and restart-settling guards still apply. Positive-duration requests cannot
+extend a timed trial deadline; an allowed zero-duration request removes it. Status reports `trial_mode`, `model_validated`,
 `remaining_s` and `restart_wait_s`. The observer uses fresh CO₂ feedback every
 cycle while retaining the delayed effects of previous injections; kinetics are not automatically refitted; optional uncertainty learning updates pulse gain within its fixed safety bound. See the driver documentation before commissioning.
 
@@ -116,5 +120,14 @@ when this object is omitted. See the driver's
 `GET /api/co2/controller` now exposes `response_uncertainty`, including the current
 nominal gain, operating range, fixed safety gain, update count and last fit quality.
 The percent-based endpoint and program forms use this same worker.
-Learning cannot reduce the fixed safety bound or extend a trial; API ownership,
+Learning cannot reduce the fixed safety bound or change a deadline; API ownership,
 sensor-gap recovery and valve shutdown remain in the shared worker.
+
+## Indefinite status and stopping
+
+`limits.allow_indefinite` tells the dashboard whether zero is accepted. While an
+indefinite run is active, status includes `indefinite: true` and `remaining_s: null`.
+The controller retains measurement recovery and all concentration/pulse guards.
+Stop CO₂, a latched fault, API shutdown or a reboot stops it. It does not restart
+automatically. Switching between timed and indefinite operation retains pending
+doses and the observer. A positive duration sets a timer on an indefinite run.
