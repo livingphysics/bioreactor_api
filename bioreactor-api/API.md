@@ -405,8 +405,8 @@ $BASE/docs
   updates the on-Pi MPC. Use exactly one of `target_percent` or legacy `target_ppm`.
   Percent means percent by volume: **2 = 20,000 ppm**. Numeric finite values only;
   target must be positive and below 9.5%, subject to stricter rig limits. Duration
-  defaults to one hour and must be positive (at most seven days, or the lower
-  configured trial maximum). Positive-duration trial updates never extend a timed deadline; an explicitly
+  defaults to one hour. Positive durations are capped at seven days or the lower
+  configured trial maximum; zero requests indefinite operation when permitted. Positive-duration trial updates never extend a timed deadline; an explicitly
   permitted zero-duration update removes it.
 - `POST /api/co2/stop`: immediate stop and valve OFF; releases/suspends a program's
   CO₂ track until its next step, without stopping other devices.
