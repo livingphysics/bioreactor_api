@@ -22,7 +22,7 @@ the on-Pi controller.
 
 The panel reads the current rig's limits; it does not assume all rigs are calibrated.
 On bioreactor01 the tested provisional profile permits setpoints up to **2%** and
-timed runs up to **240 minutes**. With `trial.allow_indefinite: true`, enter
+timed runs up to the API limit of **seven days (10,080 minutes)**. With `trial.allow_indefinite: true`, enter
 **0** minutes to run until stopped. Positive-duration updates cannot extend a
 timed trial's deadline; an explicitly permitted zero-duration update removes it. The existing minimum pulse, measurement recovery, ownership and restart
 settling guards remain active. The commissioning script's separate 27,500 ppm
