@@ -21,14 +21,15 @@ must be stopped before taking direct control. Closing the browser does not stop
 the on-Pi controller.
 
 The panel reads the current rig's limits; it does not assume all rigs are calibrated.
-On bioreactor01 the tested provisional profile permits setpoints up to **2%** and
+On bioreactor01 the provisional profile permits setpoints up to **7.5%** and
 timed runs up to the API limit of **seven days (10,080 minutes)**. With `trial.allow_indefinite: true`, enter
 **0** minutes to run until stopped. Positive-duration updates cannot extend a
 timed trial's deadline; an explicitly permitted zero-duration update removes it. The existing minimum pulse, measurement recovery, ownership and restart
-settling guards remain active. The commissioning script's separate 27,500 ppm
-supervisor is not launched by the UI; direct/program control uses the shared
-worker's configured 30,000 ppm cutoff and 29,500 ppm planning budget. Keep the
-physical setup consistent with calibration (20 ml buffer and 30% stirring).
+settling guards remain active. The worker's concentration cutoff is **95,000 ppm
+(9.5%)**, with a **90,000 ppm (9.0%)** forecast ceiling. The demonstrated 2% trial
+does not validate the model at higher concentrations; the profile remains
+provisional. Keep the physical setup consistent with calibration (20 ml buffer
+and 30% stirring).
 
 POST this JSON to `/api/co2/control` on the authenticated Pi API or dashboard proxy:
 
@@ -62,8 +63,8 @@ finite program duration within the configured maximum unless indefinite operatio
 is explicitly enabled; each CO₂ step receives
 only the time remaining to the original program deadline. Program completion,
 stop or abort stops its CO₂ worker. Use `/api/run/program/preview` to check JSON
-without actuating hardware. The 5% example requires a separately permitted profile;
-it is not enabled by the current bioreactor01 calibration.
+without actuating hardware. The 5% example is within the configured setpoint range, but the model remains
+provisional at higher concentrations.
 
 For an explicitly supervised commissioning trial, a provisional profile may keep
 `validated: false` and specify `"trial": {"enabled": true, "target_max_ppm": 10000,
