@@ -465,6 +465,8 @@ async def lifespan(app: FastAPI):
     global co2_controller
     from co2_controller import CO2API
     co2_controller = CO2API(config, gas_sampler, relay_controller, initialized_components)
+    if not simulation_mode:
+        co2_controller.enable_history()
 
     # Rolling sensor-history buffer (samples continuously, independent of runs).
     if getattr(config, 'HISTORY_ENABLED', True):
@@ -481,6 +483,7 @@ async def lifespan(app: FastAPI):
     yield
 
     co2_controller.stop()
+    co2_controller.worker.close_history()
     gas_sampler.stop()
     od_sampler.stop()
     pump_controller.stop()

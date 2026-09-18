@@ -66,6 +66,9 @@ class Config:
     # Optional provisional profile setting: trial.allow_indefinite=True permits
     # duration 0 (until stopped), retaining all concentration/pulse/sensor limits.
     CO2_MPC = None
+    # Durable dose history shared with standalone control using this same config.
+    # Keep this file on persistent local storage; it never auto-starts control.
+    CO2_MPC_STATE_PATH = str(Path(__file__).resolve().with_name('co2-controller-state.json'))
 
     # ========================================================================
     # Component Initialization Control

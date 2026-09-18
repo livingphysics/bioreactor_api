@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 class CO2API:
     def __init__(self, config, gas_sampler, relays, components):
         self.relays = relays
+        self.config = config
         self.components = components
         self.guard = getattr(config, 'RELAY_SAFETY', {}).get('CO2', {})
         def valve(on):
@@ -25,6 +26,24 @@ class CO2API:
             log=lambda row: logger.info('CO2 MPC %s', json.dumps(row, allow_nan=False)))
         # The API may have restarted with gas still in transit from a prior dose.
         self.worker._last_stop = time.monotonic()
+
+    def enable_history(self):
+        from bioreactor_v3.src.co2_history import hardware_identity, invalidate_unconfigured
+        path = getattr(self.config, 'CO2_MPC_STATE_PATH', None)
+        if path and self.worker.profile:
+            self.worker.enable_history(path, hardware_identity(self.config))
+        elif path:
+            invalidate_unconfigured(path)
+
+    def _confirm_manual_closure(self):
+        history = self.worker.history
+        if history and history.state['pending'] == 'external':
+            state = self.relays.status()
+            if state['states'].get('CO2') == 'open' and not state['pending'].get('CO2'):
+                try:
+                    self.worker.external_closed()
+                except RuntimeError as e:
+                    self.worker.fault = str(e)
 
     def validate(self, target, duration_s=None):
         if not self.components.get('co2_sensor') or not self.components.get('relays'):
@@ -46,6 +65,7 @@ class CO2API:
     def start(self, target, owner='api', duration_s=None):
         self.validate(target, duration_s)
         with self.worker.lock:
+            self._confirm_manual_closure()
             if not self.worker.active:
                 state = self.relays.status()
                 if state['states']['CO2'] != 'open' or state['pending'].get('CO2'):
@@ -56,14 +76,16 @@ class CO2API:
         """Serialize manual CO2 writes with autonomous ownership. OFF always wins."""
         with self.worker.lock:
             if name == 'CO2':
-                if command == 'open' and duration is not None:
+                timed_off = command == 'open' or (command == 'toggle' and
+                            self.relays.states().get('CO2') == 'closed')
+                if timed_off and duration is not None:
                     raise ValueError('Timed OFF would reopen CO2 later; use an immediate OFF command')
                 if self.worker.active and command != 'open':
                     raise RuntimeError('CO2 MPC owns the valve; stop it before manual dosing')
                 if command == 'open':
                     self.worker.stop(join=False)
                 else:
-                    self.worker._last_stop = time.monotonic()
+                    self.worker.external_dose()
             return (self.relays.apply(name, command) if duration is None
                     else self.relays.timed(name, command, duration))
 
@@ -74,6 +96,8 @@ class CO2API:
             self.start(target, owner='program', duration_s=duration_s)
 
     def status(self):
+        with self.worker.lock:
+            self._confirm_manual_closure()
         status = self.worker.status()
         profile = self.worker.profile or {}
         settings = profile.get('settings', {})
@@ -91,4 +115,6 @@ class CO2API:
         return status
 
     def stop(self, owner=None):
+        if owner is None or self.worker.owner == owner:
+            self.relays._cancel_timer('CO2')
         self.worker.stop(owner)

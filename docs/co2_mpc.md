@@ -156,3 +156,27 @@ The controller retains measurement recovery and all concentration/pulse guards.
 Stop CO₂, a latched fault, API shutdown or a reboot stops it. It does not restart
 automatically. Switching between timed and indefinite operation retains pending
 doses and the observer. A positive duration sets a timer on an indefinite run.
+
+## Persistent dose history across API restarts
+
+`CO2_MPC_STATE_PATH` enables the shared worker's durable dose journal. The config
+template places it beside the resolved rig `config.py`; configure existing rigs
+explicitly, using the same path for standalone operation. Keep it on persistent
+local storage, writable by the API account, and outside Git.
+
+A compatible journal from the same Pi boot restores confirmed doses, minimum
+pulse spacing and operating gain. A fresh measurement is still required. API
+restarts and clean controller stops then avoid the blanket settling wait, while
+restored gas remains in the forecast and pending-dose ceiling check. Control does
+not resume automatically. `GET /api/co2/controller` exposes `dose_history` and
+`restart_wait_s`; the existing dashboard Start/Stop controls need no change.
+
+Missing/corrupt history, an interrupted pulse, changed model/hardware, manual
+untracked dosing, or a **Pi reboot** retains the settling guard. The initial
+installation has one fallback wait; repeated service restarts preserve its
+remaining time. Disk errors prevent dosing; closure occurs before completion
+writes. Simulation mode does not use the real hardware journal. When the API
+model is unconfigured, any old journal is invalidated before manual operation.
+
+See [persistence and recovery details](../bioreactor-api/bioreactor_v3/docs/co2_mpc.md#persistent-dose-history)
+for the boot-clock policy, file ownership and untracked-writer limitations.
