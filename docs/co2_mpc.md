@@ -101,7 +101,7 @@ new_gain_safety_factor = upper_gain / new_gain
 
 For example, the bioreactor01 commissioning profile changed nominal gain from
 35,749.5165 to 20,000 ppm/s and the factor from 1.5 to 2.6812137358. Its upper
-gain remains 53,624.2747 ppm/s. Delay, mixing, leakage, pulse timing and measurement
+gain remained 53,624.2747 ppm/s for that commissioning profile. Delay, mixing, leakage, pulse timing and measurement
 recovery settings are separate and should be held fixed when evaluating a gain
 change. Compare independent recorded pulses and closed-loop simulations; a better
 nominal fit does not establish a worst-case response bound or validate the rig.
@@ -123,6 +123,30 @@ nominal gain, operating range, fixed safety gain, update count and last fit qual
 The percent-based endpoint and program forms use this same worker.
 Learning cannot reduce the fixed safety bound or change a deadline; API ownership,
 sensor-gap recovery and valve shutdown remain in the shared worker.
+
+### Nonlinear loss and overlapping-dose learning
+
+The driver also supports a fitted `model.loss_exponent` and
+`uncertainty.learning_mode: "window"`. The shared worker automatically selects
+the nonlinear engine for API, program and standalone control. Window learning
+includes every overlapping dose, so frequent pulses no longer cancel unfinished
+fits. See [the model and configuration details](../bioreactor-api/bioreactor_v3/docs/co2_mpc.md#concentration-dependent-loss-and-overlapping-doses).
+
+The revised bioreactor01 profile uses the overnight pulse/decay data: nominal gain
+58,000 ppm/s, 139 s delay, 294 s mixing time, loss exponent 1.59 and reference loss
+coefficient 0.000167926/s at 50,000 ppm above ambient. It permits a 0.125 s pulse
+at most every 300 s (previously 1,200 s), with a 2,700 s learning window updated
+at most every 300 s. Its fixed upper gain is 90,000 ppm/s; learning never changes
+this bound. These numbers are provisional and specific to this rig/setup.
+
+Simulations exercise the new capacity, but do not validate high-concentration
+hardware operation. In particular, the no-loss pending-gas guard can prevent
+reaching a high requested target even though the UI accepts it. Status field
+`last.dose_budget_blocked` identifies that limit. Keep the 7.5% target cap and
+9.5% concentration cutoff until further validation. Bioreactor01 has the **10%**
+K33 variant: a 10.5% cutoff would exceed its specified measurement range and must
+not be used. The 10% and 30% variants are distinct sensors; see
+[Senseair's 10% specification](https://senseair.com/product/k33-icb-f-10/).
 
 ## Indefinite status and stopping
 
