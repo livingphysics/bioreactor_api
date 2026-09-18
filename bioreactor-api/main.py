@@ -490,6 +490,7 @@ async def lifespan(app: FastAPI):
     relay_controller.stop()
     history.stop()
     runner.stop()
+    runner.stop_recording()
     if bioreactor:
         bioreactor.finish()
         logger.info("Hardware cleanup complete")
@@ -601,6 +602,7 @@ async def state(request: Request):
         "peltier_current": current,
         "peltier": peltier,
         "run": runner.status(),
+        "recording": runner.recording_status(),
         "co2_control": co2_controller.status() if co2_controller else None,
         "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
         "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
@@ -1235,6 +1237,28 @@ def _list_data_files():
             files.append((p, stat.st_mtime, stat.st_size))
     files.sort(key=lambda t: t[1], reverse=True)
     return files
+
+
+@app.get("/api/data/recording")
+@limiter.limit(RATE_LIMIT)
+async def recording_status(request: Request):
+    return runner.recording_status()
+
+
+@app.post("/api/data/recording/start")
+@limiter.limit(RATE_LIMIT)
+async def recording_start(request: Request):
+    """Start CSV recording independently of temperature or CO2 control."""
+    try:
+        return runner.start_recording()
+    except (InsufficientStorageError, OSError) as e:
+        raise HTTPException(status_code=507, detail=str(e))
+
+
+@app.post("/api/data/recording/stop")
+@limiter.limit(RATE_LIMIT)
+async def recording_stop(request: Request):
+    return runner.stop_recording()
 
 
 @app.get("/api/data/list")

@@ -3,7 +3,7 @@ Run control engine for the bioreactor API.
 
 Runs a background control loop (1 Hz) that drives the peltier either by stepping
 through an uploaded schedule (`duty,direction,hold_s` CSV) or by holding a PID
-temperature setpoint, logging each sample to a fresh bioreactor data CSV. It
+temperature setpoint. CSV recording can run independently of temperature control. It
 mirrors hardware_testing/heater_gui.py's schedule runner and safety cutoffs:
 abort (peltier off) if the bath temperature reads NaN for 15 consecutive samples
 or leaves the [2, 60] °C window.
@@ -63,7 +63,7 @@ def _json_safe(obj):
 # Retention only ever touches files THIS engine creates (these suffixes) at the
 # top level of the data dir — never the historical/committed data, the
 # bioreactor's own files, or subdirectories.
-RUN_FILE_SUFFIXES = ('_peltier_schedule.csv', '_pid_run.csv', '_program.csv')
+RUN_FILE_SUFFIXES = ('_peltier_schedule.csv', '_pid_run.csv', '_program.csv', '_recording.csv')
 
 
 class InsufficientStorageError(Exception):
@@ -208,6 +208,13 @@ class RunController:
         self._co2_stop_fn = None
         self._co2_status_fn = None
 
+        self._recording = False
+        self._record_owner = None
+        self._record_path = None
+        self._record_started = None
+        self._record_error = None
+        self._record_evt = None
+        self._record_thread = None
         self._reset_state()
 
     # ------------------------------------------------------------------ setup
@@ -246,7 +253,7 @@ class RunController:
 
     def prune(self):
         """Prune old run files now (e.g. on startup). No-op in simulation."""
-        if self._sim or not self._data_dir:
+        if self._sim or not self._data_dir or self._recording:
             return
         try:
             removed = prune_run_files(self._data_dir, self._retention_max_mb, self._retention_keep)
@@ -262,7 +269,7 @@ class RunController:
         is still below the configured floor. Called before the run is marked
         active, so a full disk cleanly refuses the run instead of half-starting.
         """
-        if self._sim or not self._data_dir:
+        if self._sim or not self._data_dir or self._recording:
             return
         try:
             os.makedirs(self._data_dir, exist_ok=True)
@@ -334,7 +341,6 @@ class RunController:
             with self._lock:
                 if self.active:
                     raise RuntimeError("a run is already active")
-            self._prepare_storage()
             with self._lock:
                 self._reset_state()
                 self.mode = 'pid'
@@ -388,8 +394,10 @@ class RunController:
         """Start the loop. Caller must hold the lock."""
         # Open the data file first: if it fails (e.g. disk full), we haven't yet
         # marked the run active, so the controller isn't left wedged.
-        if not self._sim:
-            self._open_data_file()
+        if self.mode != 'pid' and not self._recording:
+            self._open_data_file(owner='run')
+        if self._recording:
+            self.data_file = self._record_path
         self.active = True
         self.run_t0 = time.time()
         if self.mode == 'program' and self.program is not None and self.program.duration_s is not None:
@@ -428,46 +436,137 @@ class RunController:
                     self._pump_stop_fn()   # a program owns the pumps; stopping it stops dosing
                 except Exception as e:
                     logger.error("pump stop on run stop failed: %s", e)
-            if not self._sim:
-                self._close_data_file()
+            with self._lock:
+                if self._record_owner == 'run':
+                    self._close_data_file()
             if was_active:
                 logger.info("Run stopped%s", f" ({reason})" if reason else "")
         return self.status()
 
     # ---------------------------------------------------------------- data IO
-    def _open_data_file(self):
-        os.makedirs(self._data_dir, exist_ok=True)
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        suffix = {'schedule': 'peltier_schedule', 'program': 'program'}.get(self.mode, 'pid_run')
-        path = os.path.join(self._data_dir, f"{ts}_{suffix}.csv")
-        f = open(path, 'w', newline='')
-        writer = csv.DictWriter(f, fieldnames=self._bio.fieldnames)
-        writer.writeheader()
-        # measure_and_record_sensors() writes through these bioreactor attributes.
-        self._bio.out_file = f
-        self._bio.out_file_path = path
-        self._bio.writer = writer
+    def recording_status(self):
+        with self._lock:
+            return {'active': self._recording,
+                    'owner': self._record_owner,
+                    'data_file': os.path.basename(self._record_path) if self._record_path else None,
+                    'elapsed_s': round(time.monotonic() - self._record_started, 1)
+                        if self._recording else None,
+                    'error': self._record_error, 'simulation': self._sim}
+
+    def start_recording(self):
+        with self._lifecycle, self._lock:
+            if not self._recording:
+                self._prepare_storage()
+                self._open_data_file(owner='manual')
+            return self.recording_status()
+
+    def stop_recording(self):
+        with self._lifecycle:
+            with self._lock:
+                thread = self._record_thread
+                self._close_data_file()
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=3)
+            return self.recording_status()
+
+    def _open_data_file(self, owner):
+        # Caller holds _lock. Microseconds + exclusive create prevent overwriting
+        # a previous recording when Start/Stop is clicked within the same second.
+        path = None
+        if not self._sim:
+            os.makedirs(self._data_dir, exist_ok=True)
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            suffix = 'recording' if owner == 'manual' else {
+                'schedule': 'peltier_schedule', 'program': 'program'}[self.mode]
+            path = os.path.join(self._data_dir, f"{ts}_{suffix}.csv")
+            f = open(path, 'x', newline='')
+            try:
+                writer = csv.DictWriter(f, fieldnames=self._bio.fieldnames)
+                writer.writeheader()
+                f.flush()
+            except Exception:
+                f.close()
+                os.remove(path)
+                raise
+            self._bio.out_file = f
+            self._bio.out_file_path = path
+            self._bio.writer = writer
+            self._bio.csv_write_error = None
+        self._record_path = path
         self.data_file = path
-        # Save the program JSON beside the CSV (same basename) so a run is reproducible.
-        if self.mode == 'program' and self._program_json:
+        self._record_started = time.monotonic()
+        self._record_error = None
+        self._record_owner = owner
+        self._recording = True
+        # The control loop records its own samples while active; this thread
+        # fills in while idle, under the same lock, with no concurrent reads.
+        event = threading.Event()
+        self._record_evt = event
+        self._record_thread = threading.Thread(target=self._record_loop, args=(event,),
+                                               daemon=True, name='csv-recording')
+        self._record_thread.start()
+        if path and owner == 'run' and self.mode == 'program' and self._program_json:
             try:
                 with open(path[:-4] + '.json', 'w') as jf:
                     jf.write(self._program_json)
             except Exception as e:
                 logger.warning("could not save program JSON beside CSV: %s", e)
 
-    def _close_data_file(self):
-        if self._bio is None:
-            return
-        f = getattr(self._bio, 'out_file', None)
-        if f is not None:
+    def _close_data_file(self, error=None):
+        if self._record_evt:
+            self._record_evt.set()
+        self._recording = False
+        self._record_owner = None
+        if error:
+            self._record_error = str(error)
+            logger.error("CSV recording stopped: %s", error)
+        if self._bio is not None:
+            f = getattr(self._bio, 'out_file', None)
             try:
-                f.flush()
-                f.close()
-            except Exception:
-                pass
-        self._bio.writer = None
-        self._bio.out_file = None
+                if f is not None:
+                    f.close()
+            except Exception as e:
+                self._record_error = str(e)
+            finally:
+                self._bio.writer = None
+                self._bio.out_file = None
+
+    def _record_loop(self, event):
+        while not event.is_set():
+            tick_start = time.monotonic()
+            with self._lock:
+                # Check this session's event again after acquiring the lock:
+                # a rapid restart must never resurrect an old recorder thread.
+                if event.is_set():
+                    return
+                if not self.active and not self._sim:
+                    try:
+                        self._read_sample()
+                    except Exception as e:
+                        self._close_data_file(error=e)
+            event.wait(max(0.0, SAMPLE_PERIOD_S - (time.monotonic() - tick_start)))
+
+    def _read_sample(self):
+        elapsed = (time.monotonic() - self._record_started if self._recording
+                   else time.time() - self.run_t0)
+        od_cache = self._od_latest_fn() if self._od_latest_fn else None
+        gas_cache = (self._gas_latest_fn() if self._gas_latest_fn else None) or {}
+        led_power = self._od_power_fn() if self._od_power_fn else 10.0
+        if self._recording:
+            free = _free_mb(self._data_dir)
+            if free is not None and free < self._min_free_mb:
+                reason = f"low disk space ({free:.0f} MB free)"
+                if self._record_owner == 'run':
+                    self._finish(completed=False, abort=reason)
+                self._close_data_file(error=reason)
+        with HARDWARE_LOCK:
+            data = self._measure(self._bio, elapsed=elapsed, led_power=led_power,
+                                 od_override=od_cache,
+                                 co2_override=gas_cache.get('co2'),
+                                 o2_override=gas_cache.get('o2'), use_cached=True)
+        if self._recording and getattr(self._bio, 'csv_write_error', None):
+            self._close_data_file(error=self._bio.csv_write_error)
+        return data
 
     # ------------------------------------------------------------- actuation
     def _apply_peltier(self, duty: float, direction: str):
@@ -692,20 +791,8 @@ class RunController:
                          'direction': direction}
             return
 
-        elapsed = time.time() - self.run_t0
-        # Pull the slow sensors (OD, CO2, O2) from the background samplers' caches so the
-        # control tick doesn't do their ~1.5s reads under the lock. Fetch OUTSIDE the lock
-        # (the getters take the samplers' own locks) to avoid a lock-ordering inversion.
-        od_cache = self._od_latest_fn() if self._od_latest_fn else None
-        gas_cache = (self._gas_latest_fn() if self._gas_latest_fn else None) or {}
-        led_power = self._od_power_fn() if self._od_power_fn else 10.0
         try:
-            with HARDWARE_LOCK:
-                data = self._measure(self._bio, elapsed=elapsed, led_power=led_power,
-                                     od_override=od_cache,
-                                     co2_override=gas_cache.get('co2'),
-                                     o2_override=gas_cache.get('o2'),
-                                     use_cached=True)
+            data = self._read_sample()
         except Exception as e:
             logger.error("measure_and_record_sensors failed: %s", e)
             data = {}
@@ -736,14 +823,6 @@ class RunController:
                 self._finish(completed=False,
                              abort=f"bath {temp:.1f} °C outside [{TEMP_MIN_C:.0f}, {TEMP_MAX_C:.0f}] °C")
 
-        # Fail safe on low disk. The CSV recorder swallows write errors, so a full
-        # disk won't surface as NaN/out-of-window temps — check free space directly
-        # each tick and abort (peltier off) if it falls below the run floor.
-        if self.active:
-            free = _free_mb(self._data_dir)
-            if free is not None and free < self._min_free_mb:
-                self._finish(completed=False, abort=f"low disk space ({free:.0f} MB free)")
-
     def _finish(self, completed: bool, abort: Optional[str] = None):
         """End the run from inside the control thread. Caller holds the lock."""
         self.active = False
@@ -760,7 +839,7 @@ class RunController:
                 self._pump_stop_fn()
             except Exception as e:
                 logger.error("pump stop on finish failed: %s", e)
-        if not self._sim:
+        if self._record_owner == 'run':
             self._close_data_file()
 
     # ---------------------------------------------------------------- status

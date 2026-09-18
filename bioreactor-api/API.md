@@ -259,11 +259,12 @@ supervision is local regardless of the tunnel or the droplet.
 **Safety cutoffs** (all abort the run and cut peltier power):
 - bath temperature reads NaN for 15 consecutive samples
 - bath temperature leaves the **[2 °C, 60 °C]** window
-- free disk at the data directory falls below `DATA_MIN_FREE_MB`
+- free disk falls below `DATA_MIN_FREE_MB` while a schedule/program owns its automatic CSV
 - 15 consecutive control-loop exceptions
 
 Only one run at a time — starting a second returns `409`. A run is refused with
-`507` if free disk is already below the floor after pruning.
+`507` if a schedule/program needs to open a CSV and free disk is already below
+the floor after pruning. PID control does not require a CSV or free-disk check.
 
 ### Run a schedule (open loop)
 
@@ -287,6 +288,7 @@ curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/j
 ```
 Gains default to `kp=12.0, ki=0.015, kd=0.0`. The integrator is cleared at the
 start of every run. Requires both `peltier_driver` and `temp_sensor`.
+Starting or stopping PID does **not** start or stop manual CSV recording.
 
 ### Run a multi-device program
 
@@ -307,8 +309,9 @@ curl -X POST -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/j
   --data-binary @program.json $BASE/api/run/program/preview
 ```
 
-The uploaded program JSON is saved beside the run CSV (`*_program.json`) so a run
-is reproducible.
+When a program opens its own run CSV, its uploaded JSON is saved beside it
+(`*_program.json`) for reproducibility. If manual recording is already active,
+the program uses that CSV; retain the uploaded program JSON separately.
 
 ### Status and stop
 
@@ -345,6 +348,60 @@ Both return `{"status": "success", "interval_s": 10, "od_measurements": {...}, "
 
 ## Data files
 
+### Independent CSV recording
+
+The dashboard's **Start CSV** button (left of **Download latest CSV**) starts
+recording on the Pi. It changes to **Stop CSV** while recording. This works with
+CO₂ control, temperature PID, or neither controller running. Browser disconnects
+and stopping a controller do not stop manually started recording. Recording stops
+on an explicit recording-stop request, an API shutdown/restart, or a storage error.
+A recording error is exposed in status and does not stop independent controllers.
+Each Start creates a new `*_recording.csv`; repeated Start requests are idempotent.
+
+```bash
+curl -X POST -H "Authorization: Bearer $API_KEY" $BASE/api/data/recording/start
+curl -H "Authorization: Bearer $API_KEY" $BASE/api/data/recording
+curl -X POST -H "Authorization: Bearer $API_KEY" $BASE/api/data/recording/stop
+```
+
+Status is also returned as `recording` in `/api/state`: `active`, `owner`
+(`manual` or `run`), `data_file`, `elapsed_s`, `error`, and `simulation`.
+Simulation exposes the same controls but does not create files. Start returns
+`507` if storage is insufficient. View-only dashboard users cannot start/stop.
+
+Temperature PID and direct CO₂ control do not automatically record CSV.
+Schedules/programs retain automatic recording: their file closes when the run
+ends, unless manual recording was already active, in which case that same manual
+file continues. Stop CSV can also stop a schedule/program's recording without
+stopping the run. An open recording is never pruned.
+
+### Contents and sampling
+
+Rows are recorded nominally once per second (slower if hardware reads take longer).
+During a temperature/program run, recording shares its measurement tick; while
+idle, a dedicated recorder samples without running temperature supervision or
+actuation. Gas and OD values come from background sampler caches and may repeat
+between sensor updates. Failed/missing readings can be NaN or blank.
+
+Columns follow the rig's configured labels and initialized components:
+
+- Local timestamp `time` and seconds since recording began, `elapsed_time`.
+- Bath and ambient temperature (°C), CO₂ (ppm), O₂ (%).
+- Configured OD channels and unmapped voltage sources (including EyeSpy/ADC).
+- Peltier current (A), duty (%) and direction flag (`0` heat, `1` cool).
+- Ring-light red, green and blue values.
+- Relay states and cumulative `relay_<name>_closed_s`, including CO₂ pulses.
+- Cumulative `pump_<name>_time_s` for each configured pump.
+- When available, EKF OD, growth-rate and doubling-time estimates and their
+  uncertainties (`ekf_*`); these are derived estimates, not extra sensor readings.
+
+Cumulative relay/pump counters are since API startup, not since recording began;
+use differences between rows for doses during a recording. CSV does not include
+controller setpoints, MPC predictions/correction state, or stirrer duty. Continuous
+dashboard history remains a separate archive and is unaffected by the CSV button.
+
+### Downloads and retention
+
 Run CSVs live under `bioreactor_v3/src/bioreactor_data/` and are listed
 recursively, newest first.
 
@@ -354,7 +411,8 @@ curl -H "Authorization: Bearer $API_KEY" -OJ $BASE/api/data/latest
 ```
 
 API-generated run files (`*_peltier_schedule.csv`, `*_pid_run.csv`,
-`*_program.csv`) are pruned oldest-first on startup and before each run to stay
+`*_program.csv`, `*_recording.csv`) are pruned oldest-first on startup and before
+opening a recording to stay
 under `DATA_RETENTION_MAX_MB`, always keeping at least `DATA_RETENTION_KEEP` of
 the newest. Historical and committed data is never touched.
 

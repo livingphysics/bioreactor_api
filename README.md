@@ -100,7 +100,7 @@ curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
 # read the vial temperature
 curl -H "$AUTH" $BASE/api/temp_sensor/state
 
-# hold 37 °C with the PID loop, then stop it
+# hold 37 °C with the PID loop (does not start CSV), then stop it
 curl -X POST -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"setpoint": 37.0}' $BASE/api/run/pid
 curl -H "$AUTH" $BASE/api/run/status
@@ -109,6 +109,14 @@ curl -X POST -H "$AUTH" $BASE/api/run/stop
 
 See [`bioreactor-api/API.md`](bioreactor-api/API.md) for the full surface —
 schedules, multi-device programs, OD sampling, pumps, relays, history and camera.
+
+## CSV recording
+
+Use **Start CSV** next to **Download latest CSV** in the dashboard. Recording is
+independent of temperature PID and CO₂ control; **Stop CSV** only stops recording.
+The recorder runs on the Pi and continues if the browser disconnects. API restarts
+stop recording. Schedules/programs still record automatically unless a manual
+recording is already active. See [CSV endpoints, columns and sampling](bioreactor-api/API.md#independent-csv-recording).
 
 ## Configuration
 
