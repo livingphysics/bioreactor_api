@@ -61,6 +61,7 @@ class Config:
     # See docs/co2_mpc.md in bioreactor_v3; no controller starts automatically.
     # Optional model.loss_exponent and uncertainty.learning_mode='window' support
     # concentration-dependent loss and overlapping-dose fits; fit them per rig.
+    # Optional CO2_MPC['average_correction'] removes persistent mean tracking bias.
     # Optional profile["uncertainty"] enables scenario planning and bounded gain learning.
     # Omit it for legacy planning; see the commissioning example in the same docs.
     # Optional provisional profile setting: trial.allow_indefinite=True permits

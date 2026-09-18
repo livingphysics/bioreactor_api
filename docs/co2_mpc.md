@@ -180,3 +180,23 @@ model is unconfigured, any old journal is invalidated before manual operation.
 
 See [persistence and recovery details](../bioreactor-api/bioreactor_v3/docs/co2_mpc.md#persistent-dose-history)
 for the boot-clock policy, file ownership and untracked-writer limitations.
+
+## Correcting the measured average
+
+The optional `CO2_MPC['average_correction']` object enables slow, bounded integral
+correction in the nonlinear/window planner. The user setpoint stays unchanged;
+a persistent measured mean above it lowers the internal tracking target so doses
+occur later. This aims to centre the pulse cycles on the requested concentration,
+rather than treating it as a minimum. Concentration and pending-gas limits remain
+independent of this correction.
+
+The bioreactor01 configuration uses a 30-minute time-weighted averaging window,
+a 60-minute integral time, a 100 ppm mean-error deadband and at most a 5,000 ppm
+shift (also capped at 10% of the setpoint). Startup ramps, large disturbances and
+long measurement gaps do not integrate; changing setpoint resets the correction.
+A new run/restart starts collecting a fresh window with zero offset, while the
+dose journal still restores pending gas. Status and logs expose `average_correction`
+with mean, error, offset and internal tracking target. The gases-page requested
+setpoint remains the value entered by the user.
+
+See [configuration and anti-windup behavior](../bioreactor-api/bioreactor_v3/docs/co2_mpc.md#correcting-persistent-average-error).
