@@ -87,7 +87,7 @@ class RelayController:
             for name in self._names:
                 total = self._closed_total.get(name, 0.0)
                 since = self._closed_since.get(name)
-                out[name] = round(total + (now - since if since is not None else 0.0), 3)
+                out[name] = round(total + (now - since if since is not None else 0.0), 6)
             return out
 
     # --------------------------------------------------------------------- API

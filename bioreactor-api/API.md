@@ -515,3 +515,8 @@ set `RELAY_SAFETY[<name>]['min_duration_s']` explicitly for shorter commissionin
 pulses. Requested durations are clamped to that minimum and `max_duration_s`.
 Invalid duration limits refuse ON. This setting is independent of the MPC pulse
 settings and does not validate mechanical valve response.
+
+Relay state responses also include `closed_seconds` with six decimal places of
+retained counter precision, including completed short pulses. History retains
+the same precision. This is electrical completed-write timing, not a measurement
+of mechanical valve motion.

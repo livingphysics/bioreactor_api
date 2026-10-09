@@ -145,7 +145,7 @@ class HistoryBuffer:
         # interval (diff successive points for the per-interval amount).
         relay_closed = data.get("relay_closed_s")
         if isinstance(relay_closed, dict) and relay_closed:
-            pt["relay_closed_s"] = {k: _num(v, 2) for k, v in relay_closed.items()}
+            pt["relay_closed_s"] = {k: _num(v, 6) for k, v in relay_closed.items()}
         pump_time = data.get("pump_time_s")
         if isinstance(pump_time, dict) and pump_time:
             pt["pump_time_s"] = {k: _num(v, 2) for k, v in pump_time.items()}
