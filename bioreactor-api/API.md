@@ -485,3 +485,26 @@ CO₂ control accepts `duration_s: 0` for indefinite operation, for example
 status: validated profiles permit this; provisional profiles require the explicit
 `CO2_MPC['trial']['allow_indefinite'] = True` setting. Active indefinite runs report
 `indefinite: true` and `remaining_s: null`. Stop and fault behavior are unchanged.
+
+
+### Delayed master CO₂ tracking
+
+| Method | Route | Purpose |
+|---|---|---|
+| GET | `/api/co2/tracking` | configured sources, commissioning gate and session status |
+| POST | `/api/co2/tracking/start` | `{"source":"algae","mode":"observe","delay_s":3660,"duration_s":0}` |
+| POST | `/api/co2/tracking/stop` | stop the session and its tracking-owned controller |
+| GET | `/api/co2/tracking/log` | stream the latest session JSONL comparison log |
+
+All routes require the normal API authentication. Source IDs must be configured
+on the follower; request bodies cannot set URLs or credentials. Mode defaults to
+`observe` (no valve writes). `control` requires an explicit commissioning config
+flag, an eligible MPC profile, complete verified source history, and exclusive
+valve ownership. Default delay is 3,660 seconds; limits are 60..86,400 seconds.
+Duration is 0 (until stopped) or up to 604,800 seconds. Unknown fields and invalid
+types return 422; invalid configuration/options return 400; ownership/session
+conflicts return 409; unavailable storage returns 507.
+
+Status is also included as `co2_tracking` in `/api/state`. The comparison log is
+independent of CSV recording. Source outages inhibit dosing; no session resumes
+automatically after restart. See [tracking setup and commissioning](../docs/co2_tracking.md).

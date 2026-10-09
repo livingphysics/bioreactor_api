@@ -67,6 +67,14 @@ class Config:
     # Optional provisional profile setting: trial.allow_indefinite=True permits
     # duration 0 (until stopped), retaining all concentration/pulse/sensor limits.
     CO2_MPC = None
+
+    # Delayed master tracking. Only configured IDs can be selected through the API.
+    # Prefer the master's private Pi API over its public dashboard/login page.
+    # Set the token in the follower service environment, not in Git or the browser.
+    CO2_TRACKING_SOURCES = {}  # e.g. {'algae': {'base_url': 'http://mori:9000', 'token_env': 'CO2_MASTER_API_KEY'}}
+    CO2_TRACKING_CONTROL_ENABLED = False  # enable only after low-range commissioning
+    CO2_TRACKING_DATA_DIR = str(Path(__file__).resolve().with_name('co2-tracking-data'))
+
     # Durable dose history shared with standalone control using this same config.
     # Keep this file on persistent local storage; it never auto-starts control.
     CO2_MPC_STATE_PATH = str(Path(__file__).resolve().with_name('co2-controller-state.json'))

@@ -10,6 +10,7 @@ remote dashboard lives in [`bioreactor_server`](../bioreactor_server) and is a
 pure proxy onto this API.
 
 - **[`bioreactor-api/API.md`](bioreactor-api/API.md)** — REST reference: routes, bodies, error codes.
+- **[Delayed CO₂ tracking](docs/co2_tracking.md)** — master/follower setup, recording, commissioning and safety behavior.
 - **[`CLAUDE.md`](CLAUDE.md)** — architecture, threading model, run control, how to extend.
 
 > GitHub renamed this repo to **`bioreactor_api`** (2026-09-10). The old

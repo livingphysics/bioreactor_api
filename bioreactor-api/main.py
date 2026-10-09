@@ -11,7 +11,7 @@ import random
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional, Dict, Any
+from typing import Literal, Optional, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 # Global state
 # ---------------------------------------------------------------------------
 co2_controller = None
+co2_tracking = None
 bioreactor = None  # Bioreactor instance (None in simulation mode)
 simulation_mode = True
 initialized_components: Dict[str, bool] = {}
@@ -462,11 +463,14 @@ async def lifespan(app: FastAPI):
                     if _col not in bioreactor.fieldnames:
                         bioreactor.fieldnames.append(_col)
 
-    global co2_controller
+    global co2_controller, co2_tracking
     from co2_controller import CO2API
     co2_controller = CO2API(config, gas_sampler, relay_controller, initialized_components)
     if not simulation_mode:
         co2_controller.enable_history()
+    from co2_tracking import TrackingSession
+    co2_tracking = TrackingSession(config, co2_controller, gas_sampler)
+    co2_controller.tracking = co2_tracking
 
     # Rolling sensor-history buffer (samples continuously, independent of runs).
     if getattr(config, 'HISTORY_ENABLED', True):
@@ -604,6 +608,7 @@ async def state(request: Request):
         "run": runner.status(),
         "recording": runner.recording_status(),
         "co2_control": co2_controller.status() if co2_controller else None,
+        "co2_tracking": co2_tracking.status() if co2_tracking else None,
         "co2": _gas.get('co2') if initialized_components.get('co2_sensor') else None,
         "o2": _gas.get('o2') if initialized_components.get('o2_sensor') else None,
         "od": _read_od(),
@@ -1068,7 +1073,8 @@ async def run_program(request: Request):
             for step in tr.steps:
                 if step.command == 'co2' and step.value is not False:
                     co2_controller.validate(step.value, duration_s=prog.duration_s)
-        if co2_controller.status()['active'] and any(tr.device == 'relay:CO2' for tr in prog.tracks):
+        tracking_owns = co2_tracking and co2_tracking.status().get('active') and co2_tracking.status().get('mode') == 'control'
+        if (co2_controller.status()['active'] or tracking_owns) and any(tr.device == 'relay:CO2' for tr in prog.tracks):
             raise RuntimeError('CO2 control is already active')
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1332,7 +1338,10 @@ def _actuator_signals():
     history sampler. All come from shadows or the control lock, so this MUST be called
     OUTSIDE HARDWARE_LOCK to avoid lock-order inversion with the control thread."""
     stir = _stirrer_state()
+    tracking = co2_tracking.status() if co2_tracking else {}
     sig = {
+        'master_co2': tracking.get('master_ppm') if tracking.get('active') else None,
+        'co2_reference': tracking.get('reference_ppm') if tracking.get('active') else None,
         "ring": ([ring_color['red'], ring_color['green'], ring_color['blue']]
                  if initialized_components.get('ring_light') else None),
         "stirrer": stir['duty'] if stir else None,
@@ -1615,3 +1624,48 @@ async def stop_co2_control(request: Request):
 @limiter.limit(RATE_LIMIT)
 async def co2_control_state(request: Request):
     return co2_controller.status()
+
+
+class CO2TrackingRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    source: str = Field(min_length=1, max_length=80)
+    mode: Literal['observe', 'control'] = 'observe'
+    delay_s: float = Field(default=3660, ge=60, le=86400, allow_inf_nan=False, strict=True)
+    duration_s: float = Field(default=0, ge=0, le=604800, allow_inf_nan=False, strict=True)
+
+
+@app.get('/api/co2/tracking')
+@limiter.limit(RATE_LIMIT)
+async def co2_tracking_status(request: Request):
+    return co2_tracking.status()
+
+
+@app.post('/api/co2/tracking/start')
+@limiter.limit(RATE_LIMIT)
+async def co2_tracking_start(request: Request, req: CO2TrackingRequest):
+    try:
+        if req.mode == 'control' and runner.active and runner.mode == 'program' and any(
+                tr.device == 'relay:CO2' for tr in runner.program.tracks):
+            raise RuntimeError('An active program owns the CO2 valve')
+        return co2_tracking.start(req.source, req.delay_s, req.mode, req.duration_s)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except OSError:
+        raise HTTPException(status_code=507, detail='tracking storage unavailable')
+
+
+@app.post('/api/co2/tracking/stop')
+@limiter.limit(RATE_LIMIT)
+async def co2_tracking_stop(request: Request):
+    return await run_in_threadpool(co2_tracking.stop)
+
+
+@app.get('/api/co2/tracking/log')
+@limiter.limit(RATE_LIMIT)
+async def co2_tracking_log(request: Request):
+    path = co2_tracking.log_path()
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail='no tracking log available')
+    return FileResponse(str(path), media_type='application/x-ndjson', filename=path.name)

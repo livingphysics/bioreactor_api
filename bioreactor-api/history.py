@@ -130,7 +130,8 @@ class HistoryBuffer:
         # a missing key as null. pduty is signed: + cooling, - heating (like current).
         for key, src, nd in (("pduty", "peltier_duty", 1), ("stir", "stirrer", 1),
                              ("ir", "ir_power", 1), ("setpoint", "setpoint", 2),
-                             ("pump", "pump_duty", 1)):
+                             ("pump", "pump_duty", 1), ("master_co2", "master_co2", 1),
+                             ("co2_reference", "co2_reference", 1)):
             v = _num(data.get(src), nd)
             if v is not None:
                 pt[key] = v

@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 class CO2API:
     def __init__(self, config, gas_sampler, relays, components):
+        self.tracking = None
         self.relays = relays
         self.config = config
         self.components = components
@@ -62,7 +63,11 @@ class CO2API:
             raise ValueError('MPC pulse interval is shorter than CO2 relay guard')
         return model, settings
 
-    def start(self, target, owner='api', duration_s=None):
+    def start(self, target, owner='api', duration_s=None, reference_provider=None):
+        if owner != 'tracking' and self.tracking:
+            tracking = self.tracking.status()
+            if tracking['active'] and tracking.get('mode') == 'control':
+                raise RuntimeError('Tracking owns the CO2 valve; stop tracking first')
         self.validate(target, duration_s)
         with self.worker.lock:
             self._confirm_manual_closure()
@@ -70,10 +75,16 @@ class CO2API:
                 state = self.relays.status()
                 if state['states']['CO2'] != 'open' or state['pending'].get('CO2'):
                     raise RuntimeError('CO2 relay has a pending/active manual dose')
-            self.worker.start(target, owner, duration_s)
+            options = {'reference_provider': reference_provider} if reference_provider else {}
+            self.worker.start(target, owner, duration_s, **options)
 
     def manual(self, name, command, duration=None):
         """Serialize manual CO2 writes with autonomous ownership. OFF always wins."""
+        if name == 'CO2' and self.tracking:
+            if command == 'open':
+                self.tracking.stop()
+            elif self.tracking.status().get('active') and self.tracking.status().get('mode') == 'control':
+                raise RuntimeError('Tracking owns the CO2 valve; stop tracking first')
         with self.worker.lock:
             if name == 'CO2':
                 timed_off = command == 'open' or (command == 'toggle' and
@@ -115,6 +126,8 @@ class CO2API:
         return status
 
     def stop(self, owner=None):
+        if owner is None and self.tracking:
+            self.tracking.stop()
         if owner is None or self.worker.owner == owner:
             self.relays._cancel_timer('CO2')
         self.worker.stop(owner)

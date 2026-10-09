@@ -99,3 +99,5 @@ dmypy.json
 # Per-rig hardware config (copy from bioreactor-api/config.example.py)
 bioreactor-api/config.py
 co2-controller-state.json*
+
+bioreactor-api/co2-tracking-data/
