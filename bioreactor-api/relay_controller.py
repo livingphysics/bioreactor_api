@@ -13,6 +13,7 @@ injected set/get fns, so this module runs unchanged in simulation. GPIO writes
 must not wait for the I2C hardware lock.
 """
 import time
+import math
 import logging
 import threading
 
@@ -149,7 +150,12 @@ class RelayController:
         if wait > 0:
             raise RelaySafetyError(f"{name}: one dose per {interval:.0f}s — wait {wait:.0f}s")
         maxd = float(g.get('max_duration_s', 1.0))
-        dur = maxd if not requested else max(0.05, min(float(requested), maxd))
+        mind = float(g.get('min_duration_s', 0.05))
+        if not math.isfinite(mind) or not math.isfinite(maxd) or not 0 < mind <= maxd:
+            raise RelaySafetyError('invalid relay minimum/maximum pulse duration')
+        if requested is not None and (not math.isfinite(requested) or requested <= 0):
+            raise RelaySafetyError('pulse duration must be finite and positive')
+        dur = maxd if requested is None else max(mind, min(float(requested), maxd))
         self._last_dose[name] = now
         self._cancel_timer(name)
         self._set(name, True)                         # dose ON (closed)
@@ -158,7 +164,7 @@ class RelayController:
         with self._lock:
             self._timers[name] = (t, now + dur)
         t.start()
-        logger.info("%s dose: closed for %.2fs", name, dur)
+        logger.info("%s dose: closed for %.6fs", name, dur)
         return 'closed'
 
     def _end_dose(self, name):
@@ -194,6 +200,7 @@ class RelayController:
                 last = self._last_dose.get(n)
                 cooldown = max(0.0, g.get('min_interval_s', 0.0) - (now - last)) if last else 0.0
                 out['guards'][n] = {
+                    'min_duration_s': g.get('min_duration_s', 0.05),
                     'max_duration_s': g.get('max_duration_s'),
                     'min_interval_s': g.get('min_interval_s'),
                     'co2_max_ppm': g.get('co2_max_ppm'),

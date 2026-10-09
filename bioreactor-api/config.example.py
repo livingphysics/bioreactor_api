@@ -74,6 +74,7 @@ class Config:
     CO2_TRACKING_SOURCES = {}  # e.g. {'algae': {'base_url': 'http://mori:9000', 'token_env': 'CO2_MASTER_API_KEY'}}
     CO2_TRACKING_CONTROL_ENABLED = False  # enable only after low-range commissioning
     CO2_TRACKING_DATA_DIR = str(Path(__file__).resolve().with_name('co2-tracking-data'))
+    CO2_TRACKING_MIN_FREE_MB = 256  # stop recording/control before filling local storage
 
     # Durable dose history shared with standalone control using this same config.
     # Keep this file on persistent local storage; it never auto-starts control.
@@ -293,6 +294,7 @@ class Config:
     # in relay_controller.py (Pi), so it applies to both the manual API and program tracks.
     RELAY_SAFETY: dict = {
         'CO2': {
+            'min_duration_s': 0.05,   # lower only while commissioning reliable valve response
             'max_duration_s': 1.0,     # a dose (closed) auto-reverts to open after this
             'min_interval_s': 60.0,    # at most one dose per this window
             # Refuse a dose if CO2 is above this (or unreadable). Derived from

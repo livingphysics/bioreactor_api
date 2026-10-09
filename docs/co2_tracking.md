@@ -118,6 +118,8 @@ tracking gas already injected. Average correction freezes its offset and clears
 its window. Control resumes only with a complete verified preview. Local sensor
 outage limits and concentration cutoffs still apply. A worker fault or failed log
 write stops the session; sessions never resume automatically after API restart.
+Recording/control also stops when free storage falls below
+`CO2_TRACKING_MIN_FREE_MB` (default 256 MiB).
 
 JSONL logs persist on the follower and are independent of the manual CSV recorder.
 Each sample includes UTC time, master acquisition time and ppm, delayed reference,
@@ -132,3 +134,15 @@ For offline replay and the shared standalone worker/provider interface, see
 [driver tracking documentation](../bioreactor-api/bioreactor_v3/docs/co2_tracking.md).
 This first implementation is ready for observation and further commissioning;
 it is not validated for autonomous low-range gas control.
+
+
+## Commissioning shorter manual pulses
+
+Manual/program relay doses retain their historical 0.05-second floor unless
+`RELAY_SAFETY['CO2']['min_duration_s']` explicitly sets a different positive
+minimum. Requests are clamped between this minimum and `max_duration_s`; inspect
+these values in `/api/relays/state` before a test. The MPC has its own
+`CO2_MPC['settings']['min_pulse_s']`; changing the manual floor does not change
+that profile or establish mechanical valve resolution. Record completed electrical
+ON-time and the gas response separately. A short electrical pulse may deliver no
+gas, variable gas, or a nonlinear amount. Commission it before use in tracking.

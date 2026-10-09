@@ -508,3 +508,10 @@ conflicts return 409; unavailable storage returns 507.
 Status is also included as `co2_tracking` in `/api/state`. The comparison log is
 independent of CSV recording. Source outages inhibit dosing; no session resumes
 automatically after restart. See [tracking setup and commissioning](../docs/co2_tracking.md).
+
+
+Guarded relay doses expose `guards.<name>.min_duration_s`. It defaults to 0.05 s;
+set `RELAY_SAFETY[<name>]['min_duration_s']` explicitly for shorter commissioning
+pulses. Requested durations are clamped to that minimum and `max_duration_s`.
+Invalid duration limits refuse ON. This setting is independent of the MPC pulse
+settings and does not validate mechanical valve response.

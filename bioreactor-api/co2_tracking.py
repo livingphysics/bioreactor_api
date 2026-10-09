@@ -8,6 +8,7 @@ from collections import deque
 from datetime import datetime, timezone
 import json
 import os
+import shutil
 from pathlib import Path
 import threading
 import time
@@ -69,6 +70,9 @@ class TrackingSession:
         self.sources = getattr(config, 'CO2_TRACKING_SOURCES', {})
         self.control_enabled = getattr(config, 'CO2_TRACKING_CONTROL_ENABLED', False) is True
         self.root = Path(getattr(config, 'CO2_TRACKING_DATA_DIR', Path(__file__).parent/'co2-tracking-data'))
+        self.min_free_mb = getattr(config, 'CO2_TRACKING_MIN_FREE_MB', 256)
+        if not number(self.min_free_mb) or self.min_free_mb < 0:
+            raise ValueError('CO2_TRACKING_MIN_FREE_MB must be finite and nonnegative')
         self.period = 5.0
         self.stale_s = 30.0
         self.max_gap_s = 30.0
@@ -111,6 +115,7 @@ class TrackingSession:
             if self.active or (self._thread and self._thread.is_alive()):
                 raise RuntimeError('a tracking session is already active or stopping')
             self.root.mkdir(parents=True, exist_ok=True)
+            self._check_storage()
             self._path = self.root/('co2-tracking-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')+'.jsonl')
             # Fail before starting if storage is unavailable.
             with self._path.open('x') as file:
@@ -169,7 +174,12 @@ class TrackingSession:
             raise ReferenceUnavailable('master reference exceeds follower limits')
         return ReferenceTrajectory(tuple((mono+p[0]-epoch+delay,p[1]) for p in window),self.max_gap_s)
 
+    def _check_storage(self):
+        if shutil.disk_usage(self.root).free < self.min_free_mb*1024*1024:
+            raise OSError('tracking stopped: free disk space below configured reserve')
+
     def _tick(self, client, log):
+        self._check_storage()
         sample = client.sample()
         now, epoch = self.clock(), self.wall()
         value, acquired, age = (sample.get(k) for k in ('co2_ppm','acquired_at','sample_age_s'))
