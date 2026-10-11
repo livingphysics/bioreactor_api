@@ -134,3 +134,18 @@ Note that `config.example.py` defines a **standalone** `class Config` rather tha
 inheriting from `config_default.py`, so a setting it omits silently falls back to
 whatever default the driver's call site passes. If you add a driver setting, add
 it to both files.
+
+### Commissioning short CO₂ pulses
+
+`RELAY_SAFETY['CO2']['min_duration_s']` is configurable in seconds; `0.0001`
+means 0.1 ms. The default remains 50 ms. Guarded pulses of 10 ms or less finish
+synchronously and request OFF in `finally`, avoiding creation of a Timer while
+the valve is energized. Relay state includes `last_pulse` with the requested
+duration and software bounds around the GPIO writes. These bounds do not measure
+mechanical opening or delivered gas, and Linux scheduling can lengthen a pulse.
+
+After changing the regulator or needle valve, disable the old `CO2_MPC` profile
+and calibrate actual delivery before re-enabling control. Set a small maximum
+pulse and a long minimum interval during commissioning. The MPC's `min_pulse_s`
+and `pulse_quantum_s` should use the smallest **repeatable gas dose**, established
+on that rig, rather than the shortest command the electronics accept.

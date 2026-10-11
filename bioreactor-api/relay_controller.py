@@ -16,6 +16,7 @@ import time
 import math
 import logging
 import threading
+from bioreactor_v3.src.pulse_timing import SHORT_PULSE_S, wait_pulse
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class RelayController:
         self._last_dose = {}       # name -> epoch of last dose
         self._closed_total = {}    # name -> cumulative energized (closed) seconds
         self._closed_since = {}    # name -> monotonic time of successful ON write
+        self._last_pulse = {}      # completed short pulse write timing, not valve flow
 
     def configure(self, *, set_fn, get_fn, names, guards=None, co2_fn=None, on_change=None):
         self._set_fn = set_fn
@@ -158,6 +160,28 @@ class RelayController:
         dur = maxd if requested is None else max(mind, min(float(requested), maxd))
         self._last_dose[name] = now
         self._cancel_timer(name)
+        if dur <= SHORT_PULSE_S:
+            # Construct the event before energizing; starting a new Timer thread
+            # while ON adds substantial overhead to 0.1–1 ms commands.
+            stop = threading.Event()
+            start = time.monotonic()
+            try:
+                self._set(name, True)
+                on_complete = time.monotonic()
+                wait_pulse(dur, stop)
+            finally:
+                off_started = time.monotonic()
+                self._set(name, False)
+            end = time.monotonic()
+            timing = {'requested_s':dur, 'started_at':now,
+                'completed_at':time.time(), 'mode':'short_wait',
+                'software_duration_s':end-on_complete,
+                'write_lower_s':max(0.0, off_started-on_complete),
+                'write_upper_s':end-start}
+            with self._state_lock:
+                self._last_pulse[name] = timing
+            logger.info('%s short dose completed: %s', name, timing)
+            return 'open'
         self._set(name, True)                         # dose ON (closed)
         t = threading.Timer(dur, self._end_dose, args=(name,))
         t.daemon = True
@@ -194,6 +218,8 @@ class RelayController:
             pending = {n: round(max(0.0, fire_at - now), 1) for n, (_, fire_at) in self._timers.items()}
         out = {'states': self.states(), 'pending': pending,
                'closed_seconds': self.closed_seconds()}
+        with self._state_lock:
+            out['last_pulse'] = {name:dict(row) for name,row in self._last_pulse.items()}
         if self._guards:
             out['guards'] = {}
             for n, g in self._guards.items():

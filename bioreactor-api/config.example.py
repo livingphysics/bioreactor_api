@@ -294,7 +294,9 @@ class Config:
     # in relay_controller.py (Pi), so it applies to both the manual API and program tracks.
     RELAY_SAFETY: dict = {
         'CO2': {
-            'min_duration_s': 0.05,   # lower only while commissioning reliable valve response
+            # Seconds. A commissioned rig may opt in to 0.0001 (0.1 ms).
+            # Measure actual write timing and reliable gas delivery first.
+            'min_duration_s': 0.05,
             'max_duration_s': 1.0,     # a dose (closed) auto-reverts to open after this
             'min_interval_s': 60.0,    # at most one dose per this window
             # Refuse a dose if CO2 is above this (or unreadable). Derived from

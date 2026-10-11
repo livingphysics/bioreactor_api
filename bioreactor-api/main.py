@@ -153,6 +153,7 @@ class RelayState(BaseModel):
     pending: Dict[str, float] = {}            # name -> seconds left on a timed toggle
     guards: Dict[str, Any] = {}               # name -> safety limits + cooldown (guarded relays)
     closed_seconds: Dict[str, float] = {}     # completed-write ON-time, also during short pulses
+    last_pulse: Dict[str, Any] = {}           # short-pulse software write bounds; not gas delivery
 
 # -- Sensors (response only)
 class TemperatureState(BaseModel):
