@@ -25,6 +25,7 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime, timedelta
+from measurements import CO2_HISTORY_KEYS, clean_co2_point, co2_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,11 @@ class HistoryBuffer:
                              ("ir", "ir_power", 1), ("setpoint", "setpoint", 2),
                              ("pump", "pump_duty", 1), ("master_co2", "master_co2", 1),
                              ("co2_reference", "co2_reference", 1)):
-            v = _num(data.get(src), nd)
-            if v is not None:
+            value = data.get(src)
+            if key in CO2_HISTORY_KEYS:
+                value = co2_or_none(value)
+            v = _num(value, nd)
+            if v is not None or (key in CO2_HISTORY_KEYS and src in data):
                 pt[key] = v
         ring = data.get("ring")
         if isinstance(ring, (list, tuple)) and len(ring) == 3:
@@ -155,6 +159,7 @@ class HistoryBuffer:
         volt = data.get("volt")
         if isinstance(volt, dict) and volt:
             pt["volt"] = {k: _num(v, 5) for k, v in volt.items()}   # unmapped voltage sources
+        pt = clean_co2_point(pt)
         with self._lock:
             self._buf.append(pt)
             self._evict()
@@ -236,7 +241,7 @@ class HistoryBuffer:
                             except Exception:
                                 continue
                             if isinstance(p, dict) and start_ms <= p.get("t", 0) <= end_ms:
-                                out.append(p)
+                                out.append(clean_co2_point(p))
                 except Exception as e:
                     logger.warning("history read_range %s failed: %s", os.path.basename(path), e)
             day += timedelta(days=1)
@@ -297,7 +302,7 @@ class HistoryBuffer:
                             except Exception:
                                 continue
                             if isinstance(p, dict) and p.get("t", 0) >= cutoff:
-                                recent.append(p)
+                                recent.append(clean_co2_point(p))
                 except Exception as e:
                     logger.warning("history load %s failed: %s", os.path.basename(path), e)
         # Bridge in legacy single-file-buffer points that predate the archive, so the
@@ -311,7 +316,7 @@ class HistoryBuffer:
                 with open(self._legacy_path) as f:
                     obj = json.load(f)
                 earliest = min((p["t"] for p in recent), default=float("inf"))
-                legacy = [p for p in obj.get("points", [])
+                legacy = [clean_co2_point(p) for p in obj.get("points", [])
                           if isinstance(p, dict) and cutoff <= p.get("t", 0) < earliest]
                 if legacy:
                     recent = legacy + recent

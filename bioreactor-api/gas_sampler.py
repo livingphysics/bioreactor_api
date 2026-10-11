@@ -20,6 +20,7 @@ import time
 import random
 import logging
 import threading
+from measurements import co2_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,8 @@ class GasSampler:
             # Self-contained read (K33: ~50ms) — one short transaction under the lock.
             with self._hw_lock:
                 val = s['read_fn']()
+            if name == 'co2':
+                val = co2_or_none(val)
             return None if val is None else cast(val)
 
         device, delay_ms = s['device'], s['delay']
@@ -138,7 +141,10 @@ class GasSampler:
             text = str(data).strip()
         if not text:
             return None
-        return cast(float(text.split()[0]))
+        val = float(text.split()[0])
+        if name == 'co2':
+            val = co2_or_none(val)
+        return None if val is None else cast(val)
 
 
 # Module-level singleton

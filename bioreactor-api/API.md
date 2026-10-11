@@ -344,6 +344,12 @@ curl -H "Authorization: Bearer $API_KEY" "$BASE/api/history/range?start=<ms>&end
 ```
 Both return `{"status": "success", "interval_s": 10, "od_measurements": {...}, "od_available": true, "points": [...]}` (`interval_s` = `HISTORY_INTERVAL_S`, default 10). `/api/history` also returns `archive_earliest_ms`.
 
+CO₂ readings **above 200,000 ppm** are rejected as missing. Live sensor responses,
+new history points and archived history reads use JSON `null` for these values
+(also for non-finite values), so plots show a gap instead of stretching the axis.
+Exactly 200,000 ppm is retained. Timestamps and other measurements are preserved.
+The same rule applies to recorded master CO₂ and delayed-reference traces.
+
 ---
 
 ## Data files
