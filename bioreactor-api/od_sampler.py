@@ -21,6 +21,7 @@ import time
 import random
 import logging
 import threading
+from measurements import od_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ class ODSampler:
                             v = fn(ch) if fn else None
                         except Exception:
                             v = None
-                        readings[ch] = None if (isinstance(v, float) and v != v) else v
+                        readings[ch] = od_or_none(v)
                     time.sleep(post)                 # post-read pause
                 finally:
                     try:

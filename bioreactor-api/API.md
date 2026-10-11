@@ -210,6 +210,12 @@ configured in `config.py` (`OD_MEASUREMENTS`), each fed by a named voltage sourc
 IR-gated background sampler; `null` = not measured yet / sampling off. See
 `bioreactor_v3/docs/optics.md` for the configuration model.
 
+Negative OD/optical-source voltage readings are rejected as missing (`None` in
+Python, `null` in JSON). Zero remains valid. The rule applies to live OD and
+voltage endpoints, sampler caches used for CSV recording, new history and reads
+of existing daily/legacy history. Other signed channels, such as peltier current,
+are unaffected. Missing optical readings appear as gaps in plots.
+
 ```bash
 curl -H "Authorization: Bearer $API_KEY" $BASE/api/od/state
 ```

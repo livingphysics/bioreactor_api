@@ -25,7 +25,7 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime, timedelta
-from measurements import CO2_HISTORY_KEYS, clean_co2_point, co2_or_none
+from measurements import CO2_HISTORY_KEYS, clean_sensor_point, co2_or_none, od_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +155,11 @@ class HistoryBuffer:
             pt["pump_time_s"] = {k: _num(v, 2) for k, v in pump_time.items()}
         od = data.get("od")
         if isinstance(od, dict):
-            pt["od"] = {k: _num(v, 5) for k, v in od.items()}   # OD measurements (OD_x -> V)
+            pt["od"] = {k: _num(od_or_none(v), 5) for k, v in od.items()}   # OD measurements (OD_x -> V)
         volt = data.get("volt")
         if isinstance(volt, dict) and volt:
-            pt["volt"] = {k: _num(v, 5) for k, v in volt.items()}   # unmapped voltage sources
-        pt = clean_co2_point(pt)
+            pt["volt"] = {k: _num(od_or_none(v), 5) for k, v in volt.items()}   # unmapped voltage sources
+        pt = clean_sensor_point(pt)
         with self._lock:
             self._buf.append(pt)
             self._evict()
@@ -211,8 +211,8 @@ class HistoryBuffer:
         with self._lock:
             self._evict()
             if since_ms and since_ms > 0:
-                return [p for p in self._buf if p["t"] > since_ms]
-            return list(self._buf)
+                return [clean_sensor_point(p) for p in self._buf if p["t"] > since_ms]
+            return [clean_sensor_point(p) for p in self._buf]
 
     def read_range(self, start_ms, end_ms=None, max_points=6000):
         """Read archived points with start_ms <= t <= end_ms straight from the on-disk
@@ -241,7 +241,7 @@ class HistoryBuffer:
                             except Exception:
                                 continue
                             if isinstance(p, dict) and start_ms <= p.get("t", 0) <= end_ms:
-                                out.append(clean_co2_point(p))
+                                out.append(clean_sensor_point(p))
                 except Exception as e:
                     logger.warning("history read_range %s failed: %s", os.path.basename(path), e)
             day += timedelta(days=1)
@@ -302,7 +302,7 @@ class HistoryBuffer:
                             except Exception:
                                 continue
                             if isinstance(p, dict) and p.get("t", 0) >= cutoff:
-                                recent.append(clean_co2_point(p))
+                                recent.append(clean_sensor_point(p))
                 except Exception as e:
                     logger.warning("history load %s failed: %s", os.path.basename(path), e)
         # Bridge in legacy single-file-buffer points that predate the archive, so the
@@ -316,7 +316,7 @@ class HistoryBuffer:
                 with open(self._legacy_path) as f:
                     obj = json.load(f)
                 earliest = min((p["t"] for p in recent), default=float("inf"))
-                legacy = [clean_co2_point(p) for p in obj.get("points", [])
+                legacy = [clean_sensor_point(p) for p in obj.get("points", [])
                           if isinstance(p, dict) and cutoff <= p.get("t", 0) < earliest]
                 if legacy:
                     recent = legacy + recent

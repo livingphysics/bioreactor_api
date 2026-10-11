@@ -28,6 +28,7 @@ from control import (runner, parse_schedule, ScheduleError, HARDWARE_LOCK,
 from program import parse_program, ProgramError, expand_tracks
 from history import history
 from od_sampler import od_sampler
+from measurements import od_or_none
 from gas_sampler import gas_sampler
 from pump_controller import pump_controller
 from relay_controller import relay_controller, RelaySafetyError
@@ -1441,7 +1442,7 @@ def _read_od():
     cache = od_sampler.latest()
     if cache is None:
         return None
-    return {od: cache.get(src) for od, src in optics.od.items()}
+    return {od: od_or_none(cache.get(src)) for od, src in optics.od.items()}
 
 
 def _read_voltages():
@@ -1451,7 +1452,7 @@ def _read_voltages():
     cache = od_sampler.latest()
     if cache is None:
         return None
-    return {name: cache.get(name) for name in optics.sources}
+    return {name: od_or_none(cache.get(name)) for name in optics.sources}
 
 
 def _read_unmapped_voltages():
@@ -1481,7 +1482,7 @@ def _live_voltage(name):
     except Exception as e:
         logger.warning("live voltage read failed for %s: %s", name, e)
         return None
-    return None if (v is None or (isinstance(v, float) and math.isnan(v))) else v
+    return od_or_none(v)
 
 
 def _load_optics_module():
